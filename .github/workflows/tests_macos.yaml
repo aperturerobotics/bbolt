@@ -1,0 +1,61 @@
+---
+name: Tests macOS
+permissions: read-all
+on: [push, pull_request]
+jobs:
+  test-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - macos-unit-test-4-cpu
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: goversion
+        run: echo "goversion=$(cat .go-version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version: ${{ steps.goversion.outputs.goversion }}
+      - env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          case "${TARGET}" in
+            macos-unit-test-4-cpu)
+              CPU=4 make test
+              ;;
+            macos-unit-test-4-cpu-race)
+              CPU=4 ENABLE_RACE=true make test
+              ;;
+            *)
+              echo "Failed to find target"
+              exit 1
+              ;;
+          esac
+
+  test-macos-race:
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - macos-unit-test-4-cpu-race
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: goversion
+        run: echo "goversion=$(cat .go-version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version: ${{ steps.goversion.outputs.goversion }}
+      - env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          case "${TARGET}" in
+            macos-unit-test-4-cpu-race)
+              CPU=4 ENABLE_RACE=true make test
+              ;;
+            *)
+              echo "Failed to find target"
+              exit 1
+              ;;
+          esac

@@ -352,8 +352,18 @@ func (tx *Tx) close() {
 		var freelistPendingN = tx.db.freelist.PendingCount()
 		var freelistAlloc = tx.db.freelist.EstimatedWritePageSize()
 
-		// Remove transaction ref & writer lock.
+		// Remove transaction ref.
 		tx.db.rwtx = nil
+
+		// Check escalation before releasing locks so db.Close() can't race.
+		tx.db.checkEscalation()
+
+		// Release the cross-process writer lock before the in-process lock.
+		// This is the reverse of the acquisition order (rwlock -> fcntl).
+		if tx.db.lockFile != nil {
+			_ = tx.db.lockFile.ReleaseWriterLock()
+		}
+
 		tx.db.rwlock.Unlock()
 
 		// Merge statistics.
@@ -367,6 +377,9 @@ func (tx *Tx) close() {
 			tx.db.statlock.Unlock()
 		}
 	} else {
+		// Check escalation before removeTx releases mmaplock.RLock,
+		// which would allow db.Close()'s mmaplock.Lock() to proceed.
+		tx.db.checkEscalation()
 		tx.db.removeTx(tx)
 	}
 

@@ -26,19 +26,45 @@ and setting values. That's it.
 [hyc_symas]: https://twitter.com/hyc_symas
 [lmdb]: https://www.symas.com/symas-embedded-database-lmdb
 
-## Project Status
+## Fork Status
 
-Bolt is stable, the API is fixed, and the file format is fixed. Full unit
-test coverage and randomized black box testing are used to ensure database
-consistency and thread safety. Bolt is currently used in high-load production
-environments serving databases as large as 1TB. Many companies such as
-Shopify and Heroku use Bolt-backed services every day.
+This is a fork of [etcd-io/bbolt](https://github.com/etcd-io/bbolt) that adds
+**LMDB-style multi-process concurrent access**. The upstream bbolt only allows a
+single process to open a database at a time (exclusive file lock). This fork
+enables multiple processes to read and write the same database concurrently.
 
-## Project versioning
+### What changed
 
-bbolt uses [semantic versioning](http://semver.org).
-API should not change between patch and minor releases.
-New minor versions may add additional features to the API.
+- **Shared memory lock file** (`<dbpath>-lock`): A separate file, mmap'd
+  `MAP_SHARED` by all processes, containing a writer lock region and a reader
+  table. 64-byte cache-line aligned slots prevent false sharing.
+
+- **Lock-free reader table**: Processes register active read transaction IDs
+  using atomic CAS operations on shared memory. Stale readers (crashed
+  processes) are detected via PID liveness checks and automatically cleared.
+
+- **Per-transaction writer lock**: Writer exclusion moves from `Open()` (held
+  for the lifetime of the process) to `beginRWTx()` (held per transaction).
+  Uses `fcntl` byte-range locks on Unix and `LockFileEx` on Windows -- pure
+  Go, no cgo, automatically released on process crash.
+
+- **Cross-process freelist awareness**: The writer queries the cross-process
+  reader table (`OldestReaderTxid`) before reclaiming freed pages, ensuring
+  pages still viewed by readers in other processes are not reused.
+
+- **Automatic mmap remap**: When another process grows the DB file, both
+  `beginTx` (readers) and `beginRWTx` (writers) detect the growth and remap
+  transparently. No close/reopen needed.
+
+### Compatibility
+
+- The on-disk database format is **unchanged** -- databases created by upstream
+  bbolt can be opened by this fork and vice versa. The lock file is a separate
+  file that is created automatically.
+- The Go API is **fully backwards compatible**. Existing single-process code
+  works without modification. Multi-process access is enabled automatically
+  when multiple processes open the same database.
+- Cross-platform: Linux, macOS, Windows, Android, Solaris/AIX.
 
 ## Table of Contents
 
@@ -139,10 +165,10 @@ func main() {
 }
 ```
 
-Please note that Bolt obtains a file lock on the data file so multiple processes
-cannot open the same database at the same time. Opening an already open Bolt
-database will cause it to hang until the other process closes it. To prevent
-an indefinite wait you can pass a timeout option to the `Open()` function:
+Multiple processes can open the same database concurrently. Each process
+obtains a shared file lock and coordinates via a lock file (`<dbpath>-lock`).
+Write transactions are serialized across processes using `fcntl` locks; read
+transactions run concurrently without blocking. To set a timeout on opening:
 
 ```go
 db, err := bolt.Open("my.db", 0600, &bolt.Options{Timeout: 1 * time.Second})
@@ -151,9 +177,10 @@ db, err := bolt.Open("my.db", 0600, &bolt.Options{Timeout: 1 * time.Second})
 
 ### Transactions
 
-Bolt allows only one read-write transaction at a time but allows as many
-read-only transactions as you want at a time. Each transaction has a consistent
-view of the data as it existed when the transaction started.
+Bolt allows only one read-write transaction at a time (across all processes)
+but allows as many read-only transactions as you want at a time (across all
+processes). Each transaction has a consistent view of the data as it existed
+when the transaction started.
 
 Individual transactions and all objects created from them (e.g. buckets, keys)
 are not thread safe. To work with data in multiple goroutines you must start
@@ -794,7 +821,7 @@ flexibility to connect multiple application servers to a single database
 server but also adds overhead in serializing and transporting data over the
 network. Bolt runs as a library included in your application so all data access
 has to go through your application's process. This brings data closer to your
-application but limits multi-process access to the data.
+application. Multiple processes can open the same database concurrently.
 
 
 ### LevelDB, RocksDB
@@ -854,8 +881,9 @@ Here are a few things to note when evaluating and using Bolt:
   can be reused by a new page or can be unmapped from virtual memory and you'll
   see an `unexpected fault address` panic when accessing it.
 
-* Bolt uses an exclusive write lock on the database file so it cannot be
-  shared by multiple processes.
+* Multiple processes can access the same database concurrently. Write
+  transactions are serialized across processes; read transactions run in
+  parallel. A lock file (`<dbpath>-lock`) coordinates access.
 
 * Be careful when using `Bucket.FillPercent`. Setting a high fill percent for
   buckets that have random inserts will cause your database to have very poor

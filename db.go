@@ -134,6 +134,11 @@ type DB struct {
 	rwtx     *Tx
 	stats    *Stats
 
+	lockFile      *LockFile
+	readerSlot    int    // index of this DB instance's reader slot in the lock file
+	lastKnownTxid uint64 // last meta txid seen by this process (for detecting external commits)
+	singleProcess bool   // true when this is the sole writer-capable opener (fast path)
+
 	freelist     fl.Interface
 	freelistLoad sync.Once
 
@@ -243,16 +248,41 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 	}
 	db.path = db.file.Name()
 
-	// Lock file so that other processes using Bolt in read-write mode cannot
-	// use the database  at the same time. This would cause corruption since
-	// the two processes would write meta pages and free pages separately.
-	// The database file is locked exclusively (only one process can grab the lock)
-	// if !options.ReadOnly.
-	// The database file is locked using the shared lock (more than one process may
-	// hold a lock at the same time) otherwise (options.ReadOnly is set).
-	if err = flock(db, !db.readOnly, options.Timeout); err != nil {
+	// Open the cross-process lock file for reader/writer coordination.
+	db.lockFile, err = openLockFile(db.path+"-lock", 0)
+	if err != nil {
 		_ = db.close()
-		lg.Errorf("failed to lock db file (%s), readonly: %t, error: %v", path, db.readOnly, err)
+		lg.Errorf("failed to open lock file (%s-lock): %v", path, err)
+		return nil, err
+	}
+
+	// Acquire a reader slot in the lock file for this process.
+	db.readerSlot, err = db.lockFile.AcquireReaderSlot()
+	if err != nil {
+		_ = db.close()
+		lg.Errorf("failed to acquire reader slot for (%s): %v", path, err)
+		return nil, err
+	}
+
+	// Register as a writer-capable opener (read-only skips this).
+	// The adaptive access mode state machine determines whether this
+	// process uses the single-process fast path or full multi-process
+	// coordination.
+	if !options.ReadOnly {
+		if err := db.enterAccessMode(); err != nil {
+			_ = db.close()
+			lg.Errorf("failed to enter access mode for (%s): %v", path, err)
+			return nil, err
+		}
+	}
+
+	// Acquire a shared flock on the DB file. Previous versions used an exclusive
+	// lock (LOCK_EX) for write-capable opens, blocking other processes entirely.
+	// Now all opens use a shared lock; cross-process writer exclusion is enforced
+	// via the lock file on a per-transaction basis.
+	if err = flock(db, false, options.Timeout); err != nil {
+		_ = db.close()
+		lg.Errorf("failed to lock db file (%s), error: %v", path, err)
 		return nil, err
 	}
 
@@ -302,6 +332,12 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 
 	if db.PreLoadFreelist {
 		db.loadFreelist()
+	}
+
+	// Record the current meta txid so refreshForWriter can detect
+	// external commits (from other processes). Only needed in multi-process mode.
+	if !db.singleProcess && db.lockFile != nil {
+		db.lastKnownTxid = uint64(db.meta().Txid())
 	}
 
 	if db.readOnly {
@@ -705,14 +741,23 @@ func (db *DB) close() error {
 		errs = append(errs, err)
 	}
 
+	// Unregister as writer-capable opener (releases persistent lock if held).
+	db.exitAccessMode()
+
+	// Release reader slot and close the lock file.
+	if db.lockFile != nil {
+		db.lockFile.ReleaseReaderSlot(db.readerSlot)
+		if err := db.lockFile.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("bolt.Close(): lock file close error: %w", err))
+		}
+		db.lockFile = nil
+	}
+
 	// Close file handles.
 	if db.file != nil {
-		// No need to unlock read-only file.
-		if !db.readOnly {
-			// Unlock the file.
-			if err := funlock(db); err != nil {
-				errs = append(errs, fmt.Errorf("bolt.Close(): funlock error: %w", err))
-			}
+		// Unlock the file.
+		if err := funlock(db); err != nil {
+			errs = append(errs, fmt.Errorf("bolt.Close(): funlock error: %w", err))
 		}
 
 		// Close the file descriptor.
@@ -773,6 +818,9 @@ func (db *DB) Logger() Logger {
 }
 
 func (db *DB) beginTx() (*Tx, error) {
+	// Check if another process needs us to escalate from single to multi mode.
+	db.checkEscalation()
+
 	// Lock the meta pages while we initialize the transaction. We obtain
 	// the meta lock before the mmap lock because that's the order that the
 	// write transaction will obtain them.
@@ -797,6 +845,22 @@ func (db *DB) beginTx() (*Tx, error) {
 		return nil, berrors.ErrInvalidMapping
 	}
 
+	// In multi-process mode, another process may have grown the DB file
+	// beyond our current mmap. Skip in single-process mode (no external
+	// writer to grow the file).
+	if !db.singleProcess && db.lockFile != nil {
+		meta := db.meta()
+		maxNeeded := int(meta.Pgid()) * db.pageSize
+		if maxNeeded > db.datasz {
+			db.mmaplock.RUnlock()
+			if err := db.mmap(maxNeeded); err != nil {
+				db.metalock.Unlock()
+				return nil, fmt.Errorf("bbolt: remap for reader: %w", err)
+			}
+			db.mmaplock.RLock()
+		}
+	}
+
 	// Create a transaction associated with the database.
 	t := &Tx{}
 	t.init(db)
@@ -807,6 +871,15 @@ func (db *DB) beginTx() (*Tx, error) {
 
 	// Unlock the meta pages.
 	db.metalock.Unlock()
+
+	// Register the reader's snapshot txid in the cross-process reader table.
+	// There is a brief window between metalock.Unlock() above and SetSlotTxid() below where
+	// the reader's txid is not yet visible to other processes. This is safe because the freelist
+	// release logic uses release(minid - 1), which means pages pending at txid T are safe
+	// even with a reader at txid T (the reader doesn't block release of its own snapshot).
+	if db.lockFile != nil {
+		db.lockFile.SetSlotTxid(db.readerSlot, uint64(t.meta.Txid()))
+	}
 
 	// Update the transaction stats.
 	if db.stats != nil {
@@ -825,9 +898,23 @@ func (db *DB) beginRWTx() (*Tx, error) {
 		return nil, berrors.ErrDatabaseReadOnly
 	}
 
+	// Check if another process needs us to escalate from single to multi mode.
+	db.checkEscalation()
+
 	// Obtain writer lock. This is released by the transaction when it closes.
 	// This enforces only one writer transaction at a time.
 	db.rwlock.Lock()
+
+	// Acquire the cross-process writer lock after the in-process rwlock.
+	// This ordering ensures only one goroutine per process holds the fcntl
+	// lock at a time, which is required because POSIX fcntl locks are
+	// per-process (not per-fd or per-thread).
+	if db.lockFile != nil {
+		if err := db.lockFile.AcquireWriterLock(); err != nil {
+			db.rwlock.Unlock()
+			return nil, err
+		}
+	}
 
 	// Once we have the writer lock then we can lock the meta pages so that
 	// we can set up the transaction.
@@ -836,26 +923,193 @@ func (db *DB) beginRWTx() (*Tx, error) {
 
 	// Exit if the database is not open yet.
 	if !db.opened {
+		if db.lockFile != nil {
+			_ = db.lockFile.ReleaseWriterLock()
+		}
 		db.rwlock.Unlock()
 		return nil, berrors.ErrDatabaseNotOpen
 	}
 
 	// Exit if the database is not correctly mapped.
 	if db.data == nil {
+		if db.lockFile != nil {
+			_ = db.lockFile.ReleaseWriterLock()
+		}
 		db.rwlock.Unlock()
 		return nil, berrors.ErrInvalidMapping
+	}
+
+	// In multi-process mode, another process may have committed changes
+	// since we last loaded the freelist. Skip in single-process mode
+	// (no external commits possible).
+	if !db.singleProcess && db.lockFile != nil {
+		if err := db.refreshForWriter(); err != nil {
+			_ = db.lockFile.ReleaseWriterLock()
+			db.rwlock.Unlock()
+			return nil, err
+		}
 	}
 
 	// Create a transaction associated with the database.
 	t := &Tx{writable: true}
 	t.init(db)
 	db.rwtx = t
+
+	// Track the txid this write transaction will commit, so the next
+	// beginRWTx can detect if another process committed in between.
+	// Skip in single-process mode (no external commits to detect).
+	if !db.singleProcess && db.lockFile != nil {
+		db.lastKnownTxid = uint64(t.meta.Txid())
+	}
+
+	// Query the cross-process oldest reader txid from the lock file.
+	// Add it as a synthetic readonly TXID so the freelist won't reclaim
+	// pages still being read by readers in other processes.
+	var crossProcessTxid common.Txid
+	if db.lockFile != nil {
+		crossProcessTxid = common.Txid(db.lockFile.OldestReaderTxid(uint64(t.meta.Txid())))
+		db.freelist.AddReadonlyTXID(crossProcessTxid)
+	}
+
 	db.freelist.ReleasePendingPages()
+
+	// Remove the synthetic cross-process txid after release is done.
+	if db.lockFile != nil {
+		db.freelist.RemoveReadonlyTXID(crossProcessTxid)
+	}
+
 	return t, nil
+}
+
+// enterAccessMode registers this process as a writer-capable opener and
+// determines whether to use the single-process fast path or full
+// multi-process coordination.
+//
+// Single-process mode skips refreshForWriter and the beginTx remap check
+// (no external writer to cause file growth or commit changes). All other
+// coordination (per-tx fcntl writer lock, reader table, OldestReaderTxid)
+// is always performed for correctness.
+//
+// Must be called during db.Open() before any transactions.
+func (db *DB) enterAccessMode() error {
+	newCount := db.lockFile.IncrementWriterCount()
+	db.singleProcess = newCount == 1 && db.lockFile.CASAccessMode(accessModeAvailable, accessModeSingle)
+	if !db.singleProcess {
+		// Signal escalation if still in single mode.
+		db.lockFile.CASAccessMode(accessModeSingle, accessModeEscalating)
+	}
+	return nil
+}
+
+// exitAccessMode unregisters this process as a writer-capable opener.
+// If this was the last writer, resets accessMode to available.
+// Must be called during db.close().
+func (db *DB) exitAccessMode() {
+	if db.lockFile == nil {
+		return
+	}
+	db.singleProcess = false
+	if db.lockFile.DecrementWriterCount() == 0 {
+		db.lockFile.SetAccessMode(accessModeAvailable)
+	}
+}
+
+// checkEscalation checks whether another writer-capable process has
+// opened the DB and needs this process to transition from single-process
+// fast path to full multi-process coordination.
+//
+// Cost: one atomic load (~1ns) when in single-process mode.
+func (db *DB) checkEscalation() {
+	if !db.singleProcess || db.lockFile == nil {
+		return
+	}
+	mode := db.lockFile.AccessMode()
+	if mode < accessModeEscalating {
+		return
+	}
+	// Another process has opened. Escalate to multi-process mode.
+	db.lockFile.SetAccessMode(accessModeMulti)
+	db.lastKnownTxid = uint64(db.meta().Txid())
+	db.singleProcess = false
+}
+
+// refreshForWriter refreshes the in-memory database state after
+// acquiring the cross-process writer lock. Another process may have
+// committed changes since this process last loaded its state.
+//
+// The meta pages are pointers into the MAP_SHARED mmap, so they
+// already reflect writes by other processes. However, the in-memory
+// freelist is a decoded copy that must be reloaded from disk when
+// another process has committed.
+//
+// We detect external commits by comparing the current meta txid with
+// the last txid we saw. If they differ, another process committed and
+// we must reload.
+//
+// When the freelist page lies beyond the current mmap (another
+// process grew the file), we remap first. The remap acquires
+// mmaplock.Lock(), which waits for active readers to finish.
+//
+// Must be called with metalock and rwlock held and the cross-process
+// writer lock acquired.
+func (db *DB) refreshForWriter() error {
+	if !db.hasSyncedFreelist() {
+		// NoFreelistSync mode: the freelist is reconstructed from a
+		// full page scan rather than persisted to disk. Each process
+		// maintains an independent in-memory freelist that diverges
+		// after writes, leading to silent page-level corruption.
+		return errors.New("bbolt: NoFreelistSync is not compatible with multi-process concurrent access; disable NoFreelistSync or use single-process mode")
+	}
+
+	// Check if the meta txid has changed since our last observation.
+	// The meta is a pointer into the MAP_SHARED mmap, so it reflects
+	// the latest committed state on disk.
+	currentTxid := uint64(db.meta().Txid())
+	if currentTxid == db.lastKnownTxid {
+		// No external commit since our last write. The in-memory
+		// freelist is still accurate.
+		return nil
+	}
+
+	// Another process committed. We need to reload the freelist.
+
+	// Check if we need to remap: the freelist page or the HWM page
+	// may lie beyond our current mmap.
+	meta := db.meta()
+	freelistPgid := meta.Freelist()
+	hwm := meta.Pgid() // high water mark: first unallocated page
+
+	maxNeeded := int(hwm) * db.pageSize
+	if int(freelistPgid)*db.pageSize > maxNeeded {
+		maxNeeded = int(freelistPgid+1) * db.pageSize
+	}
+	if maxNeeded > db.datasz {
+		// Another process grew the file beyond our mmap. Remap.
+		if err := db.mmap(maxNeeded); err != nil {
+			return fmt.Errorf("bbolt: remap for writer refresh: %w", err)
+		}
+		// Re-read meta after remap (pointers changed).
+		meta = db.meta()
+	}
+
+	// Reload the freelist from the current on-disk state.
+	// The previous freelist holds only Go-managed memory (maps, slices)
+	// with no external resources, so it is safe to let the GC reclaim it.
+	db.freelist = newFreelist(db.FreelistType)
+	db.freelist.Read(db.page(meta.Freelist()))
+	if db.stats != nil {
+		db.stats.FreePageN = db.freelist.FreeCount()
+	}
+	return nil
 }
 
 // removeTx removes a transaction from the database.
 func (db *DB) removeTx(tx *Tx) {
+	// Clear the reader's txid in the cross-process reader table.
+	if db.lockFile != nil {
+		db.lockFile.ClearSlotTxid(db.readerSlot)
+	}
+
 	// Release the read lock on the mmap.
 	db.mmaplock.RUnlock()
 

@@ -1024,6 +1024,7 @@ func (db *DB) checkEscalation() {
 	}
 	// Another process has opened. Escalate to multi-process mode.
 	db.lockFile.SetAccessMode(accessModeMulti)
+	db.lastKnownTxid = uint64(db.meta().Txid())
 	db.singleProcess = false
 }
 

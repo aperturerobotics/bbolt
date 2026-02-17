@@ -14,7 +14,7 @@ func mmapLockFile(f interface{ Fd() uintptr }, sz int) ([]byte, error) {
 	sizehi := uint32(sz >> 32)
 	sizelo := uint32(sz)
 
-	h, errno := syscall.CreateFileMapping(syscall.Handle(f.(*os.File).Fd()), nil, syscall.PAGE_READWRITE, sizehi, sizelo, nil)
+	h, errno := syscall.CreateFileMapping(syscall.Handle(f.Fd()), nil, syscall.PAGE_READWRITE, sizehi, sizelo, nil)
 	if h == 0 {
 		return nil, fmt.Errorf("CreateFileMapping lock file: %w", os.NewSyscallError("CreateFileMapping", errno))
 	}

@@ -213,9 +213,19 @@ func (lf *LockFile) IncrementWriterCount() uint32 {
 }
 
 // DecrementWriterCount atomically decrements the writer-capable opener count
-// and returns the new value.
+// and returns the new value. If the count is already 0, returns 0 without
+// decrementing to prevent underflow.
 func (lf *LockFile) DecrementWriterCount() uint32 {
-	return atomic.AddUint32(&lf.header().writerCount, ^uint32(0))
+	ptr := &lf.header().writerCount
+	for {
+		current := atomic.LoadUint32(ptr)
+		if current == 0 {
+			return 0
+		}
+		if atomic.CompareAndSwapUint32(ptr, current, current-1) {
+			return current - 1
+		}
+	}
 }
 
 // Close unmaps the lock file data and closes the file descriptor.

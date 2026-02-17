@@ -276,9 +276,10 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 		}
 	}
 
-	// Always acquire a shared flock on the DB file for basic protection
-	// against file deletion. The cross-process writer lock is now
-	// per-transaction via the lock file, not per-open via flock.
+	// Acquire a shared flock on the DB file. Previous versions used an exclusive
+	// lock (LOCK_EX) for write-capable opens, blocking other processes entirely.
+	// Now all opens use a shared lock; cross-process writer exclusion is enforced
+	// via the lock file on a per-transaction basis.
 	if err = flock(db, false, options.Timeout); err != nil {
 		_ = db.close()
 		lg.Errorf("failed to lock db file (%s), error: %v", path, err)
@@ -1092,6 +1093,8 @@ func (db *DB) refreshForWriter() error {
 	}
 
 	// Reload the freelist from the current on-disk state.
+	// The previous freelist holds only Go-managed memory (maps, slices)
+	// with no external resources, so it is safe to let the GC reclaim it.
 	db.freelist = newFreelist(db.FreelistType)
 	db.freelist.Read(db.page(meta.Freelist()))
 	if db.stats != nil {

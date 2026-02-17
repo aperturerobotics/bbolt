@@ -16,6 +16,8 @@ func (lf *LockFile) AcquireWriterLock() error {
 		0,
 		writerLockRegionSize,
 		0,
+		// Zero-initialized Overlapped is correct for blocking byte-range locks;
+		// hEvent is not needed when not using overlapped I/O.
 		&windows.Overlapped{Offset: writerLockRegionOffset},
 	)
 	if err != nil {
@@ -33,6 +35,8 @@ func (lf *LockFile) TryAcquireWriterLock() (bool, error) {
 		0,
 		writerLockRegionSize,
 		0,
+		// Zero-initialized Overlapped is correct for blocking byte-range locks;
+		// hEvent is not needed when not using overlapped I/O.
 		&windows.Overlapped{Offset: writerLockRegionOffset},
 	)
 	if err == nil {
@@ -51,6 +55,8 @@ func (lf *LockFile) ReleaseWriterLock() error {
 		0,
 		writerLockRegionSize,
 		0,
+		// Zero-initialized Overlapped is correct for blocking byte-range locks;
+		// hEvent is not needed when not using overlapped I/O.
 		&windows.Overlapped{Offset: writerLockRegionOffset},
 	)
 	if err != nil {

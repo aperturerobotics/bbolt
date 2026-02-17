@@ -361,6 +361,9 @@ func (tx *Tx) close() {
 		// Release the cross-process writer lock before the in-process lock.
 		// This is the reverse of the acquisition order (rwlock -> fcntl).
 		if tx.db.lockFile != nil {
+			// Error is intentionally ignored: fcntl locks are automatically
+			// released on process exit, and a failed unlock here means the
+			// lock will be released when the file descriptor is closed.
 			_ = tx.db.lockFile.ReleaseWriterLock()
 		}
 

@@ -135,7 +135,7 @@ type DB struct {
 	stats    *Stats
 
 	lockFile      *LockFile
-	readerSlot    int    // index of this process's reader slot in the lock file
+	readerSlot    int    // index of this DB instance's reader slot in the lock file
 	lastKnownTxid uint64 // last meta txid seen by this process (for detecting external commits)
 	singleProcess bool   // true when this is the sole writer-capable opener (fast path)
 

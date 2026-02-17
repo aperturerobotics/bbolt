@@ -54,10 +54,10 @@ const (
 // lockFileHeader is the on-disk/mmap header of the lock file.
 // It occupies the first 64 bytes.
 type lockFileHeader struct {
-	magic       uint32
-	version     uint32
-	maxReaders  uint32
-	numReaders  uint32
+	magic      uint32
+	version    uint32
+	maxReaders uint32
+	numReaders uint32
 	// writerCount is the number of writer-capable openers (atomic).
 	// NOTE: After a process crash, this count may become stale and unable to detect that
 	// a writer-capable process is no longer alive (unlike reader slots which use PID-based

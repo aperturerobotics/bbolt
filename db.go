@@ -1049,11 +1049,11 @@ func (db *DB) checkEscalation() {
 // writer lock acquired.
 func (db *DB) refreshForWriter() error {
 	if !db.hasSyncedFreelist() {
-		// NoFreelistSync mode: the freelist must be reconstructed by
-		// scanning the DB (via freepages/beginTx), which would
-		// deadlock since we hold metalock. NoFreelistSync is
-		// incompatible with multi-process writing. Skip reload.
-		return nil
+		// NoFreelistSync mode: the freelist is reconstructed from a
+		// full page scan rather than persisted to disk. Each process
+		// maintains an independent in-memory freelist that diverges
+		// after writes, leading to silent page-level corruption.
+		return errors.New("bbolt: NoFreelistSync is not compatible with multi-process concurrent access; disable NoFreelistSync or use single-process mode")
 	}
 
 	// Check if the meta txid has changed since our last observation.

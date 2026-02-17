@@ -872,6 +872,10 @@ func (db *DB) beginTx() (*Tx, error) {
 	db.metalock.Unlock()
 
 	// Register the reader's snapshot txid in the cross-process reader table.
+	// There is a brief window between metalock.Unlock() above and SetSlotTxid() below where
+	// the reader's txid is not yet visible to other processes. This is safe because the freelist
+	// release logic uses release(minid - 1), which means pages pending at txid T are safe
+	// even with a reader at txid T (the reader doesn't block release of its own snapshot).
 	if db.lockFile != nil {
 		db.lockFile.SetSlotTxid(db.readerSlot, uint64(t.meta.Txid()))
 	}

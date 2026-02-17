@@ -58,7 +58,13 @@ type lockFileHeader struct {
 	version     uint32
 	maxReaders  uint32
 	numReaders  uint32
-	writerCount uint32   // number of writer-capable openers (atomic)
+	// writerCount is the number of writer-capable openers (atomic).
+	// NOTE: After a process crash, this count may become stale and unable to detect that
+	// a writer-capable process is no longer alive (unlike reader slots which use PID-based
+	// detection). If a crash leaves writerCount > 0, the system will remain in multi-process
+	// mode (accessModeMulti), which is safe but suboptimal. The DecrementWriterCount underflow
+	// guard provides mitigation by preventing the count from going negative.
+	writerCount uint32
 	accessMode  uint32   // adaptive access mode (atomic), see accessMode* constants
 	_           [40]byte // padding to 64 bytes
 }

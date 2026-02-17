@@ -511,12 +511,6 @@ func childWriteAndHang(dbPath string) {
 	time.Sleep(30 * time.Second)
 }
 
-// childReadHoldReopenReverify is like childReadVerifyHoldReverify but
-// closes and reopens the DB before the second verification. This is
-// needed when the writer grows the DB file beyond the reader's original
-// mmap -- a new Begin() on the stale mmap would reference pages beyond
-// the old mmap boundary. Reopening forces a fresh mmap at the grown
-// file size.
 // TestHelperProcess is a no-op test target that exists so child processes
 // can be invoked via -test.run=TestHelperProcess. The actual work is done
 // in init() via the BBOLT_TEST_CHILD_CMD environment variable check.

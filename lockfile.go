@@ -82,7 +82,8 @@ type readerSlot struct {
 	_pad [48]byte //nolint:unused
 }
 
-// Compile-time assertions that struct sizes match the expected constants.
+// Compile-time size assertions: if sizes don't match, these const
+// declarations cause an overflow to negative uint, triggering a compile error.
 const _ = -uint(unsafe.Sizeof(lockFileHeader{}) - lockFileHeaderSize) // lockFileHeader must be 64 bytes
 const _ = -uint(lockFileHeaderSize - unsafe.Sizeof(lockFileHeader{})) // lockFileHeader must be 64 bytes
 const _ = -uint(unsafe.Sizeof(readerSlot{}) - readerSlotSize)         // readerSlot must be 64 bytes

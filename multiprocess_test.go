@@ -994,6 +994,11 @@ func TestMultiProcessReaderAcrossMultipleCommits(t *testing.T) {
 		return base + strings.Repeat("x", 1024-len(base))
 	}
 
+	// The number of write rounds and the final value are known upfront.
+	const numRounds = 5
+	originalVal := makeVal("orig", 0)
+	finalVal := makeVal(fmt.Sprintf("round%d", numRounds), 0)
+
 	// Parent writes initial data: 100 keys with 1KB values.
 	db, err := bolt.Open(dbPath, 0600, nil)
 	if err != nil {
@@ -1016,123 +1021,12 @@ func TestMultiProcessReaderAcrossMultipleCommits(t *testing.T) {
 		t.Fatalf("initial write: %v", err)
 	}
 
-	originalVal := makeVal("orig", 0)
-	// We will do 5 rounds of writes. The final value for key-000 after
-	// round 5 is "round5-000-xxx...".
-	var finalVal string
-
 	signalPath := filepath.Join(dir, "child-ready")
 	parentDonePath := filepath.Join(dir, "parent-done")
 
-	// Spawn child reader that holds a snapshot of the initial data.
+	// Spawn child reader with all values known upfront, including the
+	// final value it should see after re-reading post-writes.
 	child := spawnChild(t, "read-verify-hold-reverify", dbPath,
-		"BBOLT_TEST_SIGNAL_PATH="+signalPath,
-		"BBOLT_TEST_PARENT_DONE_PATH="+parentDonePath,
-		"BBOLT_TEST_VERIFY_KEY=key-000",
-		"BBOLT_TEST_EXPECTED_VAL="+originalVal,
-		"BBOLT_TEST_BUCKET=test",
-	)
-
-	if err := child.Start(); err != nil {
-		db.Close()
-		t.Fatalf("start child: %v", err)
-	}
-
-	// Wait for child to signal it has verified original value and is
-	// holding the transaction open.
-	if err := waitForSignal(signalPath, 10*time.Second); err != nil {
-		db.Close()
-		_ = child.Process.Kill()
-		_ = child.Wait()
-		t.Fatalf("child signal: %v", err)
-	}
-
-	// Parent does 5 sequential write transactions, each modifying all
-	// 100 keys. This forces page allocations and freelist changes.
-	for round := 1; round <= 5; round++ {
-		prefix := fmt.Sprintf("round%d", round)
-		err = db.Update(func(tx *bolt.Tx) error {
-			b := tx.Bucket([]byte("test"))
-			if b == nil {
-				return fmt.Errorf("bucket not found")
-			}
-			for i := 0; i < 100; i++ {
-				key := fmt.Sprintf("key-%03d", i)
-				if err := b.Put([]byte(key), []byte(makeVal(prefix, i))); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			db.Close()
-			_ = child.Process.Kill()
-			_ = child.Wait()
-			t.Fatalf("write round %d: %v", round, err)
-		}
-	}
-	finalVal = makeVal("round5", 0)
-
-	// Now update the child's expected final value. We do this by writing
-	// it to a file that the child will check -- but actually, the child
-	// already has BBOLT_TEST_FINAL_VAL set at spawn time. We need to set
-	// it before spawning. Let me restructure: close DB, set final val
-	// env, respawn... Actually, the child was already spawned without
-	// BBOLT_TEST_FINAL_VAL. Let me write the final val to a file and
-	// have the child read it. But the child command already expects the
-	// env var. Let me kill this child and respawn with the correct env.
-	//
-	// Actually, the simpler approach: we know the final val at spawn
-	// time since we control the number of rounds. Let me restructure.
-
-	// We need to kill the existing child and restructure the test. But
-	// we already spawned without FINAL_VAL. Let me write the final val
-	// to a known file that the parent-done signal also conveys.
-	//
-	// Better: write the final val to a file, and the child reads it.
-	// But that changes the child command contract. Instead, let me just
-	// close the DB and kill the child, and restructure properly.
-
-	db.Close()
-
-	// Kill existing child -- it doesn't have FINAL_VAL set.
-	_ = child.Process.Kill()
-	_ = child.Wait()
-
-	// Restart the test properly: parent writes initial data, spawns
-	// child with both EXPECTED_VAL and FINAL_VAL known upfront, then
-	// does 5 write rounds.
-
-	// Clean up and redo properly.
-	os.Remove(signalPath)
-	os.Remove(parentDonePath)
-
-	db, err = bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 10 * time.Second})
-	if err != nil {
-		t.Fatalf("reopen db for reset: %v", err)
-	}
-
-	// Reset all keys back to "orig" values so child sees expected state.
-	err = db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("test"))
-		if b == nil {
-			return fmt.Errorf("bucket not found")
-		}
-		for i := 0; i < 100; i++ {
-			key := fmt.Sprintf("key-%03d", i)
-			if err := b.Put([]byte(key), []byte(makeVal("orig", i))); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		db.Close()
-		t.Fatalf("reset write: %v", err)
-	}
-
-	// Spawn child with the correct final value known upfront.
-	child = spawnChild(t, "read-verify-hold-reverify", dbPath,
 		"BBOLT_TEST_SIGNAL_PATH="+signalPath,
 		"BBOLT_TEST_PARENT_DONE_PATH="+parentDonePath,
 		"BBOLT_TEST_VERIFY_KEY=key-000",
@@ -1146,7 +1040,8 @@ func TestMultiProcessReaderAcrossMultipleCommits(t *testing.T) {
 		t.Fatalf("start child: %v", err)
 	}
 
-	// Wait for child to signal readiness.
+	// Wait for child to signal it has verified the original value and
+	// is holding the read transaction open.
 	if err := waitForSignal(signalPath, 10*time.Second); err != nil {
 		db.Close()
 		_ = child.Process.Kill()
@@ -1154,8 +1049,10 @@ func TestMultiProcessReaderAcrossMultipleCommits(t *testing.T) {
 		t.Fatalf("child signal: %v", err)
 	}
 
-	// Do 5 write rounds while child holds snapshot.
-	for round := 1; round <= 5; round++ {
+	// Parent does sequential write transactions while the child holds
+	// its snapshot. Each round modifies all 100 keys, forcing page
+	// allocations and freelist changes.
+	for round := 1; round <= numRounds; round++ {
 		prefix := fmt.Sprintf("round%d", round)
 		err = db.Update(func(tx *bolt.Tx) error {
 			b := tx.Bucket([]byte("test"))
@@ -1180,14 +1077,16 @@ func TestMultiProcessReaderAcrossMultipleCommits(t *testing.T) {
 
 	db.Close()
 
-	// Signal child that all writes are done.
+	// Signal child that all writes are done. The child will verify
+	// snapshot isolation (original value still visible in held tx),
+	// then start a new transaction and verify the final value.
 	if err := os.WriteFile(parentDonePath, []byte("done"), 0600); err != nil {
 		_ = child.Process.Kill()
 		_ = child.Wait()
 		t.Fatalf("write parent done signal: %v", err)
 	}
 
-	// Wait for child to verify snapshot isolation and re-read.
+	// Wait for child to complete its verification.
 	if err := child.Wait(); err != nil {
 		t.Fatalf("child exited with error: %v", err)
 	}

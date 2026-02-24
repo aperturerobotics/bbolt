@@ -483,10 +483,10 @@ func TestDBAdaptiveMultipleWriteTransactions(t *testing.T) {
 	}
 
 	// Write 100 keys across multiple transactions.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if err := db.Update(func(tx *Tx) error {
 			b := tx.Bucket([]byte("test"))
-			for j := 0; j < 10; j++ {
+			for j := range 10 {
 				k := fmt.Sprintf("key-%d-%d", i, j)
 				if err := b.Put([]byte(k), []byte("val")); err != nil {
 					return err
@@ -506,8 +506,8 @@ func TestDBAdaptiveMultipleWriteTransactions(t *testing.T) {
 	// Verify all keys exist.
 	if err := db.View(func(tx *Tx) error {
 		b := tx.Bucket([]byte("test"))
-		for i := 0; i < 10; i++ {
-			for j := 0; j < 10; j++ {
+		for i := range 10 {
+			for j := range 10 {
 				k := fmt.Sprintf("key-%d-%d", i, j)
 				if v := b.Get([]byte(k)); string(v) != "val" {
 					return fmt.Errorf("%s=%q, want %q", k, v, "val")

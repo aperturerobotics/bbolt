@@ -22,7 +22,7 @@ func TestTx_Check_CorruptPage(t *testing.T) {
 	// Each page can hold roughly 20 key/values pair, so 100 such
 	// key/value pairs will consume about 5 leaf pages.
 	err := db.Fill(bucketName, 1, 100,
-		func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+		func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 		func(tx int, k int) []byte { return make([]byte, 100) },
 	)
 	require.NoError(t, err)
@@ -73,7 +73,7 @@ func TestTx_Check_WithNestBucket(t *testing.T) {
 		}
 
 		t.Log("put some key/values under the parent bucket directly")
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			k, v := fmt.Sprintf("%04d", i), fmt.Sprintf("value_%4d", i)
 			if pErr := pb.Put([]byte(k), []byte(v)); pErr != nil {
 				return pErr
@@ -86,7 +86,7 @@ func TestTx_Check_WithNestBucket(t *testing.T) {
 			return bErr
 		}
 
-		for i := 0; i < 2000; i++ {
+		for i := range 2000 {
 			k, v := fmt.Sprintf("%04d", i), fmt.Sprintf("value_%4d", i)
 			if pErr := cb.Put([]byte(k), []byte(v)); pErr != nil {
 				return pErr

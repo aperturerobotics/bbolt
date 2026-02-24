@@ -17,7 +17,7 @@ func TestTx_RecursivelyCheckPages_MisplacedPage(t *testing.T) {
 	db.ForceDisableStrictMode()
 	require.NoError(t,
 		db.Fill([]byte("data"), 1, 10000,
-			func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+			func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 			func(tx int, k int) []byte { return make([]byte, 100) },
 		))
 	require.NoError(t, db.Close())
@@ -56,7 +56,7 @@ func TestTx_RecursivelyCheckPages_CorruptedLeaf(t *testing.T) {
 	db.ForceDisableStrictMode()
 	require.NoError(t,
 		db.Fill([]byte("data"), 1, 10000,
-			func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+			func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 			func(tx int, k int) []byte { return make([]byte, 100) },
 		))
 	require.NoError(t, db.Close())

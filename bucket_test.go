@@ -220,7 +220,7 @@ func TestDB_Put_VeryLarge(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for j := 0; j < batchN; j++ {
+			for j := range batchN {
 				k, v := make([]byte, ksize), make([]byte, vsize)
 				binary.BigEndian.PutUint32(k, uint32(i+j))
 				if err := b.Put(k, v); err != nil {
@@ -336,7 +336,7 @@ func TestBucket_Delete_Large(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			if err := b.Put([]byte(strconv.Itoa(i)), []byte(strings.Repeat("*", 1024))); err != nil {
 				t.Fatal(err)
 			}
@@ -349,7 +349,7 @@ func TestBucket_Delete_Large(t *testing.T) {
 
 	if err := db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("widgets"))
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			if err := b.Delete([]byte(strconv.Itoa(i))); err != nil {
 				t.Fatal(err)
 			}
@@ -361,7 +361,7 @@ func TestBucket_Delete_Large(t *testing.T) {
 
 	if err := db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("widgets"))
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			if v := b.Get([]byte(strconv.Itoa(i))); v != nil {
 				t.Fatalf("unexpected value: %v, i=%d", v, i)
 			}
@@ -389,7 +389,7 @@ func TestBucket_Delete_FreelistOverflow(t *testing.T) {
 				t.Fatalf("bucket error: %s", err)
 			}
 
-			for j := uint64(0); j < 1000; j++ {
+			for j := range uint64(1000) {
 				binary.BigEndian.PutUint64(k[:8], i)
 				binary.BigEndian.PutUint64(k[8:], j)
 				if err := b.Put(k, nil); err != nil {
@@ -510,7 +510,7 @@ func TestBucket_Nested(t *testing.T) {
 	// Cause a split.
 	if err := db.Update(func(tx *bolt.Tx) error {
 		var b = tx.Bucket([]byte("widgets"))
-		for i := 0; i < 10000; i++ {
+		for i := range 10000 {
 			if err := b.Put([]byte(strconv.Itoa(i)), []byte(strconv.Itoa(i))); err != nil {
 				t.Fatal(err)
 			}
@@ -542,7 +542,7 @@ func TestBucket_Nested(t *testing.T) {
 		if v := b.Get([]byte("bar")); !bytes.Equal(v, []byte("xxxx")) {
 			t.Fatalf("unexpected value: %v", v)
 		}
-		for i := 0; i < 10000; i++ {
+		for i := range 10000 {
 			if v := b.Get([]byte(strconv.Itoa(i))); !bytes.Equal(v, []byte(strconv.Itoa(i))) {
 				t.Fatalf("unexpected value: %v", v)
 			}
@@ -730,8 +730,8 @@ func TestBucket_DeleteBucket_Large(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		for i := 0; i < 1000; i++ {
-			if err := foo.Put([]byte(fmt.Sprintf("%d", i)), []byte(fmt.Sprintf("%0100d", i))); err != nil {
+		for i := range 1000 {
+			if err := foo.Put(fmt.Appendf(nil, "%d", i), fmt.Appendf(nil, "%0100d", i)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1238,14 +1238,14 @@ func TestBucket_Stats(t *testing.T) {
 
 	// Add bucket with fewer keys but one big value.
 	bigKey := []byte("really-big-value")
-	for i := 0; i < 500; i++ {
+	for i := range 500 {
 		if err := db.Update(func(tx *bolt.Tx) error {
 			b, err := tx.CreateBucketIfNotExists([]byte("woojits"))
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			if err := b.Put([]byte(fmt.Sprintf("%03d", i)), []byte(strconv.Itoa(i))); err != nil {
+			if err := b.Put(fmt.Appendf(nil, "%03d", i), []byte(strconv.Itoa(i))); err != nil {
 				t.Fatal(err)
 			}
 			return nil
@@ -1359,7 +1359,7 @@ func TestBucket_Stats_RandomFill(t *testing.T) {
 			b.FillPercent = 0.9
 			for _, j := range rand.Perm(100) {
 				index := (j * 10000) + i
-				if err := b.Put([]byte(fmt.Sprintf("%d000000000000000", index)), []byte("0000000000")); err != nil {
+				if err := b.Put(fmt.Appendf(nil, "%d000000000000000", index), []byte("0000000000")); err != nil {
 					t.Fatal(err)
 				}
 				count++
@@ -1534,8 +1534,8 @@ func TestBucket_Stats_Nested(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for i := 0; i < 100; i++ {
-			if err := b.Put([]byte(fmt.Sprintf("%02d", i)), []byte(fmt.Sprintf("%02d", i))); err != nil {
+		for i := range 100 {
+			if err := b.Put(fmt.Appendf(nil, "%02d", i), fmt.Appendf(nil, "%02d", i)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1544,7 +1544,7 @@ func TestBucket_Stats_Nested(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			if err := bar.Put([]byte(strconv.Itoa(i)), []byte(strconv.Itoa(i))); err != nil {
 				t.Fatal(err)
 			}
@@ -1554,7 +1554,7 @@ func TestBucket_Stats_Nested(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			if err := baz.Put([]byte(strconv.Itoa(i)), []byte(strconv.Itoa(i))); err != nil {
 				t.Fatal(err)
 			}
@@ -1702,7 +1702,7 @@ func TestBucket_Inspect(t *testing.T) {
 
 			if item.b != nil {
 				for i := 0; i < item.bs.KeyN; i++ {
-					err := item.b.Put([]byte(fmt.Sprintf("%02d", i)), []byte(fmt.Sprintf("%02d", i)))
+					err := item.b.Put(fmt.Appendf(nil, "%02d", i), fmt.Appendf(nil, "%02d", i))
 					require.NoError(t, err)
 				}
 
@@ -1740,14 +1740,14 @@ func TestBucket_Stats_Large(t *testing.T) {
 	db := btesting.MustCreateDB(t)
 
 	var index int
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		// Add bucket with lots of keys.
 		if err := db.Update(func(tx *bolt.Tx) error {
 			b, err := tx.CreateBucketIfNotExists([]byte("widgets"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			for i := 0; i < 1000; i++ {
+			for range 1000 {
 				if err := b.Put([]byte(strconv.Itoa(index)), []byte(strconv.Itoa(index))); err != nil {
 					t.Fatal(err)
 				}
@@ -1998,7 +1998,7 @@ func BenchmarkBucket_CreateBucketIfNotExists(b *testing.B) {
 	const bucketCount = 1_000_000
 
 	err := db.Update(func(tx *bolt.Tx) error {
-		for i := 0; i < bucketCount; i++ {
+		for i := range bucketCount {
 			bucketName := fmt.Sprintf("bucket_%d", i)
 			_, berr := tx.CreateBucket([]byte(bucketName))
 			require.NoError(b, berr)

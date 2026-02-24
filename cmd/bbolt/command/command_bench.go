@@ -198,7 +198,7 @@ func runWrites(cmd *cobra.Command, db *bolt.DB, options *benchOptions, results *
 		startProfiling(cmd, options)
 	}
 
-	finishChan := make(chan interface{})
+	finishChan := make(chan any)
 	go checkProgress(results, finishChan, cmd.ErrOrStderr())
 	defer close(finishChan)
 
@@ -399,7 +399,7 @@ func runReads(cmd *cobra.Command, db *bolt.DB, options *benchOptions, results *b
 		startProfiling(cmd, options)
 	}
 
-	finishChan := make(chan interface{})
+	finishChan := make(chan any)
 	go checkProgress(results, finishChan, cmd.ErrOrStderr())
 	defer close(finishChan)
 
@@ -593,7 +593,7 @@ func runReadsRandomNested(cmd *cobra.Command, db *bolt.DB, options *benchOptions
 	})
 }
 
-func checkProgress(results *benchResults, finishChan chan interface{}, stderr io.Writer) {
+func checkProgress(results *benchResults, finishChan chan any, stderr io.Writer) {
 	ticker := time.Tick(time.Second)
 	lastCompleted, lastTime := int64(0), time.Now()
 	for {

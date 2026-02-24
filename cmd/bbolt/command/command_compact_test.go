@@ -23,8 +23,8 @@ func TestCompactCommand_Run(t *testing.T) {
 	db := btesting.MustCreateDB(t)
 	if err := db.Update(func(tx *bolt.Tx) error {
 		n := 2 + rand.Intn(5)
-		for i := 0; i < n; i++ {
-			k := []byte(fmt.Sprintf("b%d", i))
+		for i := range n {
+			k := fmt.Appendf(nil, "b%d", i)
 			b, err := tx.CreateBucketIfNotExists(k)
 			if err != nil {
 				return err
@@ -48,13 +48,13 @@ func TestCompactCommand_Run(t *testing.T) {
 			return err
 		}
 		n := 5 + rand.Intn(5)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			v := make([]byte, 1000*1000*(1+rand.Intn(5)))
 			_, err := crypto.Read(v)
 			if err != nil {
 				return err
 			}
-			if err := b.Put([]byte(fmt.Sprintf("l%d", i)), v); err != nil {
+			if err := b.Put(fmt.Appendf(nil, "l%d", i), v); err != nil {
 				return err
 			}
 		}

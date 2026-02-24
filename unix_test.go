@@ -59,12 +59,12 @@ func TestMlock_DbCanGrow_Big(t *testing.T) {
 
 	db := btesting.MustCreateDBWithOption(t, &bolt.Options{Mlock: true})
 
-	for chunk := 0; chunk < chunksBefore; chunk++ {
+	for chunk := range chunksBefore {
 		insertChunk(t, db, chunk)
 	}
 	dbSize := fileSize(db.Path())
 
-	for chunk := 0; chunk < chunksAfter; chunk++ {
+	for chunk := range chunksAfter {
 		insertChunk(t, db, chunksBefore+chunk)
 	}
 	newDbSize := fileSize(db.Path())
@@ -83,8 +83,8 @@ func insertChunk(t *testing.T, db *btesting.DB, chunkId int) {
 			t.Fatal(err)
 		}
 
-		for i := 0; i < chunkSize; i++ {
-			key := []byte(fmt.Sprintf("key-%d-%d", chunkId, i))
+		for i := range chunkSize {
+			key := fmt.Appendf(nil, "key-%d-%d", chunkId, i)
 			value := []byte("value")
 			if err := b.Put(key, value); err != nil {
 				t.Fatal(err)

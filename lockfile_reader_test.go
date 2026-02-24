@@ -97,7 +97,7 @@ func TestReaderSlotFull(t *testing.T) {
 	lf := openTestLockFileN(t, maxReaders)
 
 	// Fill all slots.
-	for i := 0; i < maxReaders; i++ {
+	for i := range maxReaders {
 		_, err := lf.AcquireReaderSlot()
 		if err != nil {
 			t.Fatalf("AcquireReaderSlot[%d]: %v", i, err)

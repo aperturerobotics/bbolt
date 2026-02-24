@@ -54,10 +54,10 @@ func TestTx_Check_ReadOnly(t *testing.T) {
 		errc <- <-tx.Check()
 	}
 	// Ensure the freelist is not reloaded and does not race.
-	for i := 0; i < numChecks; i++ {
+	for range numChecks {
 		go check()
 	}
-	for i := 0; i < numChecks; i++ {
+	for range numChecks {
 		if err := <-errc; err != nil {
 			t.Fatal(err)
 		}

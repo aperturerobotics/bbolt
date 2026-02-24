@@ -89,7 +89,7 @@ func fillBucket(b *bolt.Bucket, prefix []byte) error {
 		if err != nil {
 			return err
 		}
-		k := append(prefix, []byte(fmt.Sprintf("k%d", i))...)
+		k := append(prefix, fmt.Appendf(nil, "k%d", i)...)
 		if err := b.Put(k, v); err != nil {
 			return err
 		}
@@ -101,7 +101,7 @@ func fillBucket(b *bolt.Bucket, prefix []byte) error {
 	}
 	n = 1 + rand.Intn(3)
 	for i := 0; i < n; i++ {
-		k := append(prefix, []byte(fmt.Sprintf("b%d", i))...)
+		k := append(prefix, fmt.Appendf(nil, "b%d", i)...)
 		sb, err := b.CreateBucket(k)
 		if err != nil {
 			return err

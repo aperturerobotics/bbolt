@@ -46,7 +46,7 @@ func testSimulate(t *testing.T, openOption *bolt.Options, round, threadCount, pa
 
 	var mutex sync.Mutex
 
-	for n := 0; n < round; n++ {
+	for range round {
 		// Run n threads in parallel, each with their own operation.
 		var threads = make(chan bool, parallelism)
 		var wg sync.WaitGroup
@@ -230,12 +230,12 @@ func simulatePutHandler(tx *bolt.Tx, qdb *QuickDB) {
 // that the Bolt database is consistent.
 type QuickDB struct {
 	sync.RWMutex
-	m map[string]interface{}
+	m map[string]any
 }
 
 // NewQuickDB returns an instance of QuickDB.
 func NewQuickDB() *QuickDB {
-	return &QuickDB{m: make(map[string]interface{})}
+	return &QuickDB{m: make(map[string]any)}
 }
 
 // Get retrieves the value at a key path.
@@ -250,7 +250,7 @@ func (db *QuickDB) Get(keys [][]byte) []byte {
 			return nil
 		}
 		switch value := value.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			m = value
 		case []byte:
 			return nil
@@ -277,9 +277,9 @@ func (db *QuickDB) Put(keys [][]byte, value []byte) {
 		}
 
 		if m[string(key)] == nil {
-			m[string(key)] = make(map[string]interface{})
+			m[string(key)] = make(map[string]any)
 		}
-		m = m[string(key)].(map[string]interface{})
+		m = m[string(key)].(map[string]any)
 	}
 
 	// Insert value into the last key.
@@ -298,12 +298,12 @@ func (db *QuickDB) Rand() [][]byte {
 	return keys
 }
 
-func (db *QuickDB) rand(m map[string]interface{}, keys *[][]byte) {
+func (db *QuickDB) rand(m map[string]any, keys *[][]byte) {
 	i, index := 0, rand.Intn(len(m))
 	for k, v := range m {
 		if i == index {
 			*keys = append(*keys, []byte(k))
-			if v, ok := v.(map[string]interface{}); ok {
+			if v, ok := v.(map[string]any); ok {
 				db.rand(v, keys)
 			}
 			return
@@ -320,11 +320,11 @@ func (db *QuickDB) Copy() *QuickDB {
 	return &QuickDB{m: db.copy(db.m)}
 }
 
-func (db *QuickDB) copy(m map[string]interface{}) map[string]interface{} {
-	clone := make(map[string]interface{}, len(m))
+func (db *QuickDB) copy(m map[string]any) map[string]any {
+	clone := make(map[string]any, len(m))
 	for k, v := range m {
 		switch v := v.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			clone[k] = db.copy(v)
 		default:
 			clone[k] = v
@@ -337,7 +337,7 @@ func randKey() []byte {
 	var min, max = 1, 1024
 	n := rand.Intn(max-min) + min
 	b := make([]byte, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		b[i] = byte(rand.Intn(255))
 	}
 	return b
@@ -346,7 +346,7 @@ func randKey() []byte {
 func randKeys() [][]byte {
 	var keys [][]byte
 	var count = rand.Intn(2) + 2
-	for i := 0; i < count; i++ {
+	for range count {
 		keys = append(keys, randKey())
 	}
 	return keys
@@ -355,7 +355,7 @@ func randKeys() [][]byte {
 func randValue() []byte {
 	n := rand.Intn(8192)
 	b := make([]byte, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		b[i] = byte(rand.Intn(255))
 	}
 	return b

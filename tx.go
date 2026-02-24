@@ -552,10 +552,7 @@ func (tx *Tx) write() error {
 
 		// Write out page in "max allocation" sized chunks.
 		for {
-			sz := rem
-			if sz > common.MaxAllocSize-1 {
-				sz = common.MaxAllocSize - 1
-			}
+			sz := min(rem, common.MaxAllocSize-1)
 			buf := common.UnsafeByteSlice(unsafe.Pointer(p), written, 0, int(sz))
 
 			if _, err := tx.db.ops.writeAt(buf, offset); err != nil {

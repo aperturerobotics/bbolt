@@ -49,7 +49,7 @@ func TestKeysCommand_Run(t *testing.T) {
 
 				t.Logf("inserting test data into test bucket %s", tc.testBucket)
 				if tc.printable {
-					for i := 0; i < 3; i++ {
+					for i := range 3 {
 						key := fmt.Sprintf("%s-%d", tc.testBucket, i)
 						if pErr := b.Put([]byte(key), []byte{0}); pErr != nil {
 							return pErr

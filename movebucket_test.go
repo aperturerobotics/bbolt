@@ -378,7 +378,7 @@ func createBucketAndPopulateData(t testing.TB, tx *bbolt.Tx, bk *bbolt.Bucket, b
 func populateSampleDataInBucket(t testing.TB, bk *bbolt.Bucket, n int) {
 	var min, max = 1, 1024
 
-	for i := 0; i < n; i++ {
+	for range n {
 		// generate rand key/value length
 		keyLength := rand.Intn(max-min) + min
 		valLength := rand.Intn(max-min) + min

@@ -78,7 +78,7 @@ func TestFailpoint_mLockFail_When_remap(t *testing.T) {
 	require.NoError(t, err)
 
 	err = db.Fill([]byte("data"), 1, 10000,
-		func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+		func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 		func(tx int, k int) []byte { return make([]byte, 100) },
 	)
 
@@ -92,7 +92,7 @@ func TestFailpoint_mLockFail_When_remap(t *testing.T) {
 	db.MustReopen()
 
 	err = db.Fill([]byte("data"), 1, 10000,
-		func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+		func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 		func(tx int, k int) []byte { return make([]byte, 100) },
 	)
 
@@ -106,7 +106,7 @@ func TestFailpoint_ResizeFileFail(t *testing.T) {
 	require.NoError(t, err)
 
 	err = db.Fill([]byte("data"), 1, 10000,
-		func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+		func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 		func(tx int, k int) []byte { return make([]byte, 100) },
 	)
 
@@ -120,7 +120,7 @@ func TestFailpoint_ResizeFileFail(t *testing.T) {
 	db.MustReopen()
 
 	err = db.Fill([]byte("data"), 1, 10000,
-		func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+		func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 		func(tx int, k int) []byte { return make([]byte, 100) },
 	)
 
@@ -302,7 +302,7 @@ func TestTx_Rollback_Freelist(t *testing.T) {
 	t.Log("Remove some keys to have at least 3 more free pages.")
 	err = db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketName)
-		for i := 0; i < 6; i++ {
+		for i := range 6 {
 			if terr := b.Delete([]byte(keys[i])); terr != nil {
 				return terr
 			}
@@ -350,7 +350,7 @@ func TestTx_Rollback_Freelist(t *testing.T) {
 }
 
 func idToBytes(id int) []byte {
-	return []byte(fmt.Sprintf("%010d", id))
+	return fmt.Appendf(nil, "%010d", id)
 }
 
 func readFreelistPageIds(path string) ([]common.Pgid, error) {

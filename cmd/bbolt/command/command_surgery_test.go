@@ -69,7 +69,7 @@ func TestSurgery_CopyPage(t *testing.T) {
 	// Insert some sample data
 	t.Log("Insert some sample data")
 	err := db.Fill([]byte("data"), 1, 20,
-		func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+		func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 		func(tx int, k int) []byte { return make([]byte, 10) },
 	)
 	require.NoError(t, err)
@@ -109,7 +109,7 @@ func TestSurgery_ClearPage(t *testing.T) {
 	// Insert some sample data
 	t.Log("Insert some sample data")
 	err := db.Fill([]byte("data"), 1, 20,
-		func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+		func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 		func(tx int, k int) []byte { return make([]byte, 10) },
 	)
 	require.NoError(t, err)
@@ -258,7 +258,6 @@ func TestSurgery_ClearPageElements_Without_Overflow(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			testSurgeryClearPageElementsWithoutOverflow(t, tc.from, tc.to, tc.isBranchPage, tc.setEndIdxAsCount, tc.removeOnlyOneElement, tc.expectError)
 		})
@@ -273,7 +272,7 @@ func testSurgeryClearPageElementsWithoutOverflow(t *testing.T, startIdx, endIdx 
 	// Generate sample db
 	t.Log("Generate some sample data")
 	err := db.Fill([]byte("data"), 10, 200,
-		func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", tx*10000+k)) },
+		func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", tx*10000+k) },
 		func(tx int, k int) []byte { return make([]byte, 10) },
 	)
 	require.NoError(t, err)
@@ -476,7 +475,6 @@ func TestSurgery_ClearPageElements_With_Overflow(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 
 		t.Run(tc.name, func(t *testing.T) {
 			testSurgeryClearPageElementsWithOverflow(t, tc.from, tc.to, tc.valueSizes, tc.expectedOverflow)
@@ -493,7 +491,7 @@ func testSurgeryClearPageElementsWithOverflow(t *testing.T, startIdx, endIdx int
 	err := db.Update(func(tx *bolt.Tx) error {
 		b, _ := tx.CreateBucketIfNotExists([]byte("data"))
 		for i, valueSize := range valueSizes {
-			key := []byte(fmt.Sprintf("%04d", i))
+			key := fmt.Appendf(nil, "%04d", i)
 			val := make([]byte, valueSize)
 			if putErr := b.Put(key, val); putErr != nil {
 				return putErr
@@ -625,7 +623,6 @@ func TestSurgeryRequiredFlags(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			rootCmd := command.NewRootCommand()
 			rootCmd.SetArgs(tc.args)

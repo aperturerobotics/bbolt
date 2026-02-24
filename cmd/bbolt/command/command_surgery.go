@@ -282,7 +282,7 @@ func readMetaPage(path string) (*common.Meta, error) {
 	}
 
 	m := make([]*common.Meta, 2)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		m[i], _, err = ReadMetaPageAt(path, uint32(i), uint32(pageSize))
 		if err != nil {
 			return nil, fmt.Errorf("read meta page %d failed: %w", i, err)

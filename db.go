@@ -318,7 +318,7 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 
 	// Initialize page pool.
 	db.pagePool = sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			return make([]byte, db.pageSize)
 		},
 	}
@@ -665,7 +665,7 @@ func (db *DB) mrelock(fileSizeFrom, fileSizeTo int) error {
 func (db *DB) init() error {
 	// Create two meta pages on a buffer.
 	buf := make([]byte, db.pageSize*4)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		p := db.pageInBuffer(buf, common.Pgid(i))
 		p.SetId(common.Pgid(i))
 		p.SetFlags(common.MetaPageFlag)
@@ -1306,7 +1306,7 @@ retry:
 var trySolo = errors.New("batch function returned an error and should be re-run solo")
 
 type panicked struct {
-	reason interface{}
+	reason any
 }
 
 func (p panicked) Error() string {

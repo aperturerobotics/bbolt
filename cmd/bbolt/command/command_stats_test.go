@@ -77,7 +77,7 @@ func TestStatsCommand_Run(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			if err := b.Put([]byte(strconv.Itoa(i)), []byte(strconv.Itoa(i))); err != nil {
 				return err
 			}
@@ -88,7 +88,7 @@ func TestStatsCommand_Run(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			if err := b.Put([]byte(strconv.Itoa(i)), []byte(strconv.Itoa(i))); err != nil {
 				return err
 			}

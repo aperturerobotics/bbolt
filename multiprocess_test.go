@@ -197,7 +197,7 @@ func childReadHoldReread(dbPath string) {
 
 	// Wait for the parent to signal that it has committed the write.
 	if parentDonePath != "" {
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			if _, err := os.Stat(parentDonePath); err == nil {
 				break
 			}
@@ -372,7 +372,7 @@ func childReadVerifyHoldReverify(dbPath string) {
 
 	// Wait for the parent to signal that all writes are done.
 	if parentDonePath != "" {
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			if _, err := os.Stat(parentDonePath); err == nil {
 				break
 			}
@@ -431,7 +431,7 @@ func childRapidOpenClose(dbPath string) {
 		os.Exit(1)
 	}
 
-	for i := 0; i < iterations; i++ {
+	for i := range iterations {
 		db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 10 * time.Second})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "child open db iter %d: %v\n", i, err)
@@ -584,7 +584,7 @@ func TestMultiProcessConcurrentReaders(t *testing.T) {
 	children := make([]*exec.Cmd, numReaders)
 	signals := make([]string, numReaders)
 
-	for i := 0; i < numReaders; i++ {
+	for i := range numReaders {
 		signals[i] = filepath.Join(dir, fmt.Sprintf("signal-%d", i))
 		children[i] = spawnChild(t, "read-and-verify", dbPath,
 			"BBOLT_TEST_SIGNAL_PATH="+signals[i],
@@ -598,7 +598,7 @@ func TestMultiProcessConcurrentReaders(t *testing.T) {
 	}
 
 	// Wait for all children to signal readiness.
-	for i := 0; i < numReaders; i++ {
+	for i := range numReaders {
 		if err := waitForSignal(signals[i], 10*time.Second); err != nil {
 			t.Fatalf("child %d signal: %v", i, err)
 		}
@@ -606,7 +606,7 @@ func TestMultiProcessConcurrentReaders(t *testing.T) {
 
 	// All readers have the transaction open and verified the data.
 	// Wait for all children to complete.
-	for i := 0; i < numReaders; i++ {
+	for i := range numReaders {
 		if err := children[i].Wait(); err != nil {
 			t.Errorf("child %d exited with error: %v", i, err)
 		}
@@ -798,7 +798,7 @@ func TestMultiProcessStaleReaderRecovery(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			key := fmt.Sprintf("key-%03d", i)
 			val := fmt.Sprintf("val-%03d", i)
 			if err := b.Put([]byte(key), []byte(val)); err != nil {
@@ -885,7 +885,7 @@ func TestMultiProcessStaleReaderRecovery(t *testing.T) {
 		if b == nil {
 			return fmt.Errorf("bucket not found")
 		}
-		for i := 0; i < 200; i++ {
+		for i := range 200 {
 			key := fmt.Sprintf("key-%03d", i)
 			val := b.Get([]byte(key))
 			expected := fmt.Sprintf("val-%03d", i)
@@ -930,7 +930,7 @@ func TestMultiProcessSequentialWriters(t *testing.T) {
 	}
 
 	// Run 3 child writers sequentially. Each writes 10 keys.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		start := i * 10
 		child := spawnChild(t, "write-sequential", dbPath,
 			fmt.Sprintf("BBOLT_TEST_KEY_START=%d", start),
@@ -954,7 +954,7 @@ func TestMultiProcessSequentialWriters(t *testing.T) {
 		if b == nil {
 			return fmt.Errorf("bucket not found")
 		}
-		for i := 0; i < 30; i++ {
+		for i := range 30 {
 			key := fmt.Sprintf("seq-%d", i)
 			val := b.Get([]byte(key))
 			expected := fmt.Sprintf("val-%d", i)
@@ -1003,7 +1003,7 @@ func TestMultiProcessReaderAcrossMultipleCommits(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			key := fmt.Sprintf("key-%03d", i)
 			if err := b.Put([]byte(key), []byte(makeVal("orig", i))); err != nil {
 				return err
@@ -1053,7 +1053,7 @@ func TestMultiProcessReaderAcrossMultipleCommits(t *testing.T) {
 			if b == nil {
 				return fmt.Errorf("bucket not found")
 			}
-			for i := 0; i < 100; i++ {
+			for i := range 100 {
 				key := fmt.Sprintf("key-%03d", i)
 				if err := b.Put([]byte(key), []byte(makeVal(prefix, i))); err != nil {
 					return err
@@ -1120,7 +1120,7 @@ func TestMultiProcessManyReaders(t *testing.T) {
 	children := make([]*exec.Cmd, numReaders)
 	signals := make([]string, numReaders)
 
-	for i := 0; i < numReaders; i++ {
+	for i := range numReaders {
 		signals[i] = filepath.Join(dir, fmt.Sprintf("signal-%d", i))
 		children[i] = spawnChild(t, "read-and-verify", dbPath,
 			"BBOLT_TEST_SIGNAL_PATH="+signals[i],
@@ -1134,14 +1134,14 @@ func TestMultiProcessManyReaders(t *testing.T) {
 	}
 
 	// Wait for all children to signal readiness.
-	for i := 0; i < numReaders; i++ {
+	for i := range numReaders {
 		if err := waitForSignal(signals[i], 15*time.Second); err != nil {
 			t.Fatalf("child %d signal: %v", i, err)
 		}
 	}
 
 	// Wait for all children to complete.
-	for i := 0; i < numReaders; i++ {
+	for i := range numReaders {
 		if err := children[i].Wait(); err != nil {
 			t.Errorf("child %d exited with error: %v", i, err)
 		}
@@ -1222,7 +1222,7 @@ func TestMultiProcessDBGrowth(t *testing.T) {
 		if b == nil {
 			return fmt.Errorf("bucket not found")
 		}
-		for i := 0; i < 500; i++ {
+		for i := range 500 {
 			key := fmt.Sprintf("grow-%03d", i)
 			if err := b.Put([]byte(key), []byte(largeVal)); err != nil {
 				return err
@@ -1304,7 +1304,7 @@ func TestMultiProcessRapidOpenClose(t *testing.T) {
 	// Spawn 5 child processes that each open/read/close 10 times.
 	const numChildren = 5
 	children := make([]*exec.Cmd, numChildren)
-	for i := 0; i < numChildren; i++ {
+	for i := range numChildren {
 		children[i] = spawnChild(t, "rapid-open-close", dbPath,
 			"BBOLT_TEST_ITERATIONS=10",
 			"BBOLT_TEST_BUCKET=test",
@@ -1315,7 +1315,7 @@ func TestMultiProcessRapidOpenClose(t *testing.T) {
 	}
 
 	// Wait for all children to complete.
-	for i := 0; i < numChildren; i++ {
+	for i := range numChildren {
 		if err := children[i].Wait(); err != nil {
 			t.Errorf("child %d exited with error: %v", i, err)
 		}

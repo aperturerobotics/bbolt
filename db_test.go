@@ -82,8 +82,8 @@ func TestOpen_MultipleGoroutines(t *testing.T) {
 	defer os.RemoveAll(path)
 	var wg sync.WaitGroup
 	errCh := make(chan error, iterations*instances)
-	for iteration := 0; iteration < iterations; iteration++ {
-		for instance := 0; instance < instances; instance++ {
+	for range iterations {
+		for range instances {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -287,7 +287,7 @@ func TestOpen_Size(t *testing.T) {
 
 	// Insert until we get above the minimum 4MB size.
 	err := db.Fill([]byte("data"), 1, 10000,
-		func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+		func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 		func(tx int, k int) []byte { return make([]byte, 1000) },
 	)
 	if err != nil {
@@ -341,10 +341,10 @@ func TestOpen_Size_Large(t *testing.T) {
 
 	// Insert until we get above the minimum 4MB size.
 	var index uint64
-	for i := 0; i < 10000; i++ {
+	for range 10000 {
 		if err := db.Update(func(tx *bolt.Tx) error {
 			b, _ := tx.CreateBucketIfNotExists([]byte("data"))
-			for j := 0; j < 1000; j++ {
+			for range 1000 {
 				if err := b.Put(u64tob(index), make([]byte, 50)); err != nil {
 					t.Fatal(err)
 				}
@@ -624,7 +624,7 @@ func TestOpen_RecoverFreeList(t *testing.T) {
 		t.Fatal(err)
 	}
 	wbuf := make([]byte, 8192)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		s := fmt.Sprintf("%d", i)
 		b, err := tx.CreateBucket([]byte(s))
 		if err != nil {
@@ -642,7 +642,7 @@ func TestOpen_RecoverFreeList(t *testing.T) {
 	if tx, err = db.Begin(true); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		s := fmt.Sprintf("%d", i)
 		b := tx.Bucket([]byte(s))
 		if b == nil {
@@ -753,18 +753,18 @@ func TestDB_Concurrent_WriteTo_and_ConsistentRead(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	for i := 0; i < wtxs; i++ {
+	for i := range wtxs {
 		tx, err := db.Begin(true)
 		require.NoError(t, err)
 
 		b := tx.Bucket(bucketName)
 
-		for j := 0; j < rtxs; j++ {
+		for range rtxs {
 			rtx, rerr := db.Begin(false)
 			require.NoError(t, rerr)
 			go f(i, rtx)
 
-			for k := 0; k < 10; k++ {
+			for range 10 {
 				key, value := fmt.Sprintf("key_%d", rand.Intn(10)), fmt.Sprintf("value_%d", rand.Intn(100))
 				perr := b.Put([]byte(key), []byte(value))
 				require.NoError(t, perr)
@@ -840,7 +840,7 @@ func TestDB_WriteTo_and_Overwrite(t *testing.T) {
 				if berr != nil {
 					return berr
 				}
-				for k := 0; k < 10; k++ {
+				for range 10 {
 					key, value := fmt.Sprintf("key_%d", rand.Intn(10)), fmt.Sprintf("value_%d", rand.Intn(100))
 					if perr := b.Put([]byte(key), []byte(value)); perr != nil {
 						return perr
@@ -1234,7 +1234,7 @@ func TestDB_Consistency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		if err := db.Update(func(tx *bolt.Tx) error {
 			if err := tx.Bucket([]byte("widgets")).Put([]byte("foo"), []byte("bar")); err != nil {
 				t.Fatal(err)
@@ -1325,7 +1325,7 @@ func TestDB_Batch(t *testing.T) {
 	// Iterate over multiple updates in separate goroutines.
 	n := 2
 	ch := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(i int) {
 			ch <- db.Batch(func(tx *bolt.Tx) error {
 				return tx.Bucket([]byte("widgets")).Put(u64tob(uint64(i)), []byte{})
@@ -1334,7 +1334,7 @@ func TestDB_Batch(t *testing.T) {
 	}
 
 	// Check all responses to make sure there's no error.
-	for i := 0; i < n; i++ {
+	for range n {
 		if err := <-ch; err != nil {
 			t.Fatal(err)
 		}
@@ -1343,7 +1343,7 @@ func TestDB_Batch(t *testing.T) {
 	// Ensure data is correct.
 	if err := db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("widgets"))
-		for i := 0; i < n; i++ {
+		for i := range n {
 			if v := b.Get(u64tob(uint64(i))); v == nil {
 				t.Errorf("key not found: %d", i)
 			}
@@ -1359,7 +1359,7 @@ func TestDB_Batch_Panic(t *testing.T) {
 
 	var sentinel int
 	var bork = &sentinel
-	var problem interface{}
+	var problem any
 	var err error
 
 	// Execute a function inside a batch that panics.
@@ -1422,7 +1422,7 @@ func TestDB_BatchFull(t *testing.T) {
 	go put(3)
 
 	// Check all responses to make sure there's no error.
-	for i := 0; i < size; i++ {
+	for range size {
 		if err := <-ch; err != nil {
 			t.Fatal(err)
 		}
@@ -1468,7 +1468,7 @@ func TestDB_BatchTime(t *testing.T) {
 	// Batch must trigger by time alone.
 
 	// Check all responses to make sure there's no error.
-	for i := 0; i < size; i++ {
+	for range size {
 		if err := <-ch; err != nil {
 			t.Fatal(err)
 		}
@@ -1513,7 +1513,7 @@ func TestDBUnmap(t *testing.T) {
 // Convenience function for inserting a bunch of keys with 1000 byte values
 func fillDBWithKeys(db *btesting.DB, numKeys int) error {
 	return db.Fill([]byte("data"), 1, numKeys,
-		func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+		func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 		func(tx int, k int) []byte { return make([]byte, 1000) },
 	)
 }
@@ -1526,7 +1526,7 @@ func createFilledDB(t testing.TB, o *bolt.Options, allocSize int, numKeys int) *
 
 	// Insert a reasonable amount of data below the max size.
 	err := db.Fill([]byte("data"), 1, numKeys,
-		func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+		func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 		func(tx int, k int) []byte { return make([]byte, 1000) },
 	)
 	if err != nil {
@@ -1868,7 +1868,7 @@ func BenchmarkDBBatchAutomatic(b *testing.B) {
 		start := make(chan struct{})
 		var wg sync.WaitGroup
 
-		for round := 0; round < 1000; round++ {
+		for round := range 1000 {
 			wg.Add(1)
 
 			go func(id uint32) {
@@ -1912,7 +1912,7 @@ func BenchmarkDBBatchSingle(b *testing.B) {
 		start := make(chan struct{})
 		var wg sync.WaitGroup
 
-		for round := 0; round < 1000; round++ {
+		for round := range 1000 {
 			wg.Add(1)
 			go func(id uint32) {
 				defer wg.Done()
@@ -1956,7 +1956,7 @@ func BenchmarkDBBatchManual10x100(b *testing.B) {
 		var wg sync.WaitGroup
 		errCh := make(chan error, 10)
 
-		for major := 0; major < 10; major++ {
+		for major := range 10 {
 			wg.Add(1)
 			go func(id uint32) {
 				defer wg.Done()
@@ -1965,7 +1965,7 @@ func BenchmarkDBBatchManual10x100(b *testing.B) {
 				insert100 := func(tx *bolt.Tx) error {
 					h := fnv.New32a()
 					buf := make([]byte, 4)
-					for minor := uint32(0); minor < 100; minor++ {
+					for minor := range uint32(100) {
 						binary.LittleEndian.PutUint32(buf, uint32(id*100+minor))
 						h.Reset()
 						_, _ = h.Write(buf[:])
@@ -2001,7 +2001,7 @@ func validateBatchBench(b *testing.B, db *btesting.DB) {
 		bucket := tx.Bucket([]byte("bench"))
 		h := fnv.New32a()
 		buf := make([]byte, 4)
-		for id := uint32(0); id < 1000; id++ {
+		for id := range uint32(1000) {
 			binary.LittleEndian.PutUint32(buf, id)
 			h.Reset()
 			_, _ = h.Write(buf[:])

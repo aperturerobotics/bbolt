@@ -17,7 +17,7 @@ func TestFindPathsToKey(t *testing.T) {
 	db := btesting.MustCreateDB(t)
 	assert.NoError(t,
 		db.Fill([]byte("data"), 1, 500,
-			func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+			func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 			func(tx int, k int) []byte { return make([]byte, 100) },
 		))
 	assert.NoError(t, db.Close())
@@ -41,7 +41,7 @@ func TestFindPathsToKey_Bucket(t *testing.T) {
 	db := btesting.MustCreateDB(t)
 	assert.NoError(t,
 		db.Fill(rootBucket, 1, 500,
-			func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+			func(tx int, k int) []byte { return fmt.Appendf(nil, "%04d", k) },
 			func(tx int, k int) []byte { return make([]byte, 100) },
 		))
 	require.NoError(t, db.Update(func(tx *bbolt.Tx) error {

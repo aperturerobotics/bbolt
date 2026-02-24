@@ -132,7 +132,6 @@ func TestConcurrentGenericReadAndWrite(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			concurrentReadAndWrite(t,
 				tc.workerCount,
@@ -283,7 +282,7 @@ func runWorkers(t *testing.T,
 	var rs historyRecords
 
 	g := new(errgroup.Group)
-	for i := 0; i < workerCount; i++ {
+	for i := range workerCount {
 		w := &worker{
 			id: i,
 			db: db,
@@ -796,7 +795,6 @@ func TestConcurrentRepeatableRead(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 
 			t.Log("Preparing db.")
@@ -827,7 +825,7 @@ func TestConcurrentRepeatableRead(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				for i := 0; i < 1000; i++ {
+				for i := range 1000 {
 					k := fmt.Sprintf("key_%d", i)
 					if err := b.Put([]byte(k), make([]byte, 1024)); err != nil {
 						return err
@@ -840,7 +838,7 @@ func TestConcurrentRepeatableRead(t *testing.T) {
 			// Remove all K/V to create some free pages
 			err = db.Update(func(tx *bolt.Tx) error {
 				b := tx.Bucket(bucket)
-				for i := 0; i < 1000; i++ {
+				for i := range 1000 {
 					k := fmt.Sprintf("key_%d", i)
 					if err := b.Delete([]byte(k)); err != nil {
 						return err
@@ -870,7 +868,7 @@ func TestConcurrentRepeatableRead(t *testing.T) {
 				testDuration = 10 * time.Second
 			)
 
-			for i := 0; i < longRunningReaderCount; i++ {
+			for i := range longRunningReaderCount {
 				readWorkerName := fmt.Sprintf("reader_%d", i)
 				t.Logf("Starting long running read operation: %s", readWorkerName)
 				wg.Add(1)
@@ -884,7 +882,7 @@ func TestConcurrentRepeatableRead(t *testing.T) {
 				time.Sleep(500 * time.Millisecond)
 
 				t.Logf("Perform %d write operations after starting a long running read operation", writeOperationCountInBetween)
-				for j := 0; j < writeOperationCountInBetween; j++ {
+				for range writeOperationCountInBetween {
 					err := db.Update(func(tx *bolt.Tx) error {
 						_, eerr := executeWrite(tx, bucket, key, writeBytes, 0)
 						return eerr
@@ -899,7 +897,7 @@ func TestConcurrentRepeatableRead(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				cnt := longRunningReaderCount * writeOperationCountInBetween
-				for i := 0; i < cnt; i++ {
+				for range cnt {
 					select {
 					case <-stopCh:
 						return

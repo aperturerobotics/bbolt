@@ -60,8 +60,8 @@ func TestCursor_RepeatOperations(t *testing.T) {
 
 func testCursorRepeatOperations_PrepareData(t *testing.T, b *bolt.Bucket) {
 	// ensure we have at least one branch page.
-	for i := 0; i < 1000; i++ {
-		k := []byte(fmt.Sprintf("%05d", i))
+	for i := range 1000 {
+		k := fmt.Appendf(nil, "%05d", i)
 		err := b.Put(k, k)
 		require.NoError(t, err)
 	}
@@ -70,39 +70,39 @@ func testCursorRepeatOperations_PrepareData(t *testing.T, b *bolt.Bucket) {
 func testRepeatCursorOperations_NextPrevNext(t *testing.T, b *bolt.Bucket) {
 	c := b.Cursor()
 	c.First()
-	startKey := []byte(fmt.Sprintf("%05d", 2))
+	startKey := fmt.Appendf(nil, "%05d", 2)
 	returnedKey, _ := c.Seek(startKey)
 	require.Equal(t, startKey, returnedKey)
 
 	// Step 1: verify next
 	for i := 3; i < 1000; i++ {
-		expectedKey := []byte(fmt.Sprintf("%05d", i))
+		expectedKey := fmt.Appendf(nil, "%05d", i)
 		actualKey, _ := c.Next()
 		require.Equal(t, expectedKey, actualKey)
 	}
 
 	// Once we've reached the end, it should always return nil no matter how many times we call `Next`.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		k, _ := c.Next()
 		require.Equal(t, []byte(nil), k)
 	}
 
 	// Step 2: verify prev
 	for i := 998; i >= 0; i-- {
-		expectedKey := []byte(fmt.Sprintf("%05d", i))
+		expectedKey := fmt.Appendf(nil, "%05d", i)
 		actualKey, _ := c.Prev()
 		require.Equal(t, expectedKey, actualKey)
 	}
 
 	// Once we've reached the beginning, it should always return nil no matter how many times we call `Prev`.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		k, _ := c.Prev()
 		require.Equal(t, []byte(nil), k)
 	}
 
 	// Step 3: verify next again
 	for i := 1; i < 1000; i++ {
-		expectedKey := []byte(fmt.Sprintf("%05d", i))
+		expectedKey := fmt.Appendf(nil, "%05d", i)
 		actualKey, _ := c.Next()
 		require.Equal(t, expectedKey, actualKey)
 	}
@@ -111,39 +111,39 @@ func testRepeatCursorOperations_NextPrevNext(t *testing.T, b *bolt.Bucket) {
 func testRepeatCursorOperations_PrevNextPrev(t *testing.T, b *bolt.Bucket) {
 	c := b.Cursor()
 
-	startKey := []byte(fmt.Sprintf("%05d", 998))
+	startKey := fmt.Appendf(nil, "%05d", 998)
 	returnedKey, _ := c.Seek(startKey)
 	require.Equal(t, startKey, returnedKey)
 
 	// Step 1: verify prev
 	for i := 997; i >= 0; i-- {
-		expectedKey := []byte(fmt.Sprintf("%05d", i))
+		expectedKey := fmt.Appendf(nil, "%05d", i)
 		actualKey, _ := c.Prev()
 		require.Equal(t, expectedKey, actualKey)
 	}
 
 	// Once we've reached the beginning, it should always return nil no matter how many times we call `Prev`.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		k, _ := c.Prev()
 		require.Equal(t, []byte(nil), k)
 	}
 
 	// Step 2: verify next
 	for i := 1; i < 1000; i++ {
-		expectedKey := []byte(fmt.Sprintf("%05d", i))
+		expectedKey := fmt.Appendf(nil, "%05d", i)
 		actualKey, _ := c.Next()
 		require.Equal(t, expectedKey, actualKey)
 	}
 
 	// Once we've reached the end, it should always return nil no matter how many times we call `Next`.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		k, _ := c.Next()
 		require.Equal(t, []byte(nil), k)
 	}
 
 	// Step 3: verify prev again
 	for i := 998; i >= 0; i-- {
-		expectedKey := []byte(fmt.Sprintf("%05d", i))
+		expectedKey := fmt.Appendf(nil, "%05d", i)
 		actualKey, _ := c.Prev()
 		require.Equal(t, expectedKey, actualKey)
 	}
@@ -247,7 +247,7 @@ func TestCursor_Delete(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for i := 0; i < count; i += 1 {
+		for i := range count {
 			k := make([]byte, 8)
 			binary.BigEndian.PutUint64(k, uint64(i))
 			if err := b.Put(k, make([]byte, 100)); err != nil {
@@ -326,7 +326,7 @@ func TestCursor_Seek_Large(t *testing.T) {
 
 	if err := db.View(func(tx *bolt.Tx) error {
 		c := tx.Bucket([]byte("widgets")).Cursor()
-		for i := 0; i < count; i++ {
+		for i := range count {
 			seek := make([]byte, 8)
 			binary.BigEndian.PutUint64(seek, uint64(i))
 
@@ -597,7 +597,7 @@ func TestCursor_First_EmptyPages(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			if err := b.Put(u64tob(uint64(i)), []byte{}); err != nil {
 				t.Fatal(err)
 			}
@@ -611,7 +611,7 @@ func TestCursor_First_EmptyPages(t *testing.T) {
 	// Delete half the keys and then try to iterate.
 	if err := db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("widgets"))
-		for i := 0; i < 600; i++ {
+		for i := range 600 {
 			if err := b.Delete(u64tob(uint64(i))); err != nil {
 				t.Fatal(err)
 			}
@@ -643,7 +643,7 @@ func TestCursor_Last_EmptyPages(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			if err := b.Put(u64tob(uint64(i)), []byte{}); err != nil {
 				t.Fatal(err)
 			}

@@ -86,7 +86,6 @@ func TestMethodPage(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			db, err := Open(fileName, 0666, &Options{
 				ReadOnly:        tc.readonly,

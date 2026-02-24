@@ -24,7 +24,7 @@ func TestPagesCommand_Run(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				key := fmt.Sprintf("%s-%d", name, i)
 				val := fmt.Sprintf("val-%s-%d", name, i)
 				if err := b.Put([]byte(key), []byte(val)); err != nil {

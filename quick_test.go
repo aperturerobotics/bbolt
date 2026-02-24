@@ -54,7 +54,7 @@ func (t testdata) Generate(rand *rand.Rand, size int) reflect.Value {
 	n := rand.Intn(qmaxitems-1) + 1
 	items := make(testdata, n)
 	used := make(map[string]bool)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		item := &items[i]
 		// Ensure that keys are unique by looping until we find one that we have not already used.
 		for {
@@ -83,7 +83,7 @@ type testdataitem struct {
 func randByteSlice(rand *rand.Rand, minSize, maxSize int) []byte {
 	n := rand.Intn(maxSize-minSize) + minSize
 	b := make([]byte, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		b[i] = byte(rand.Intn(255))
 	}
 	return b

@@ -5,7 +5,7 @@ import (
 )
 
 func UnsafeAdd(base unsafe.Pointer, offset uintptr) unsafe.Pointer {
-	return unsafe.Pointer(uintptr(base) + offset)
+	return unsafe.Add(base, offset)
 }
 
 func UnsafeIndex(base unsafe.Pointer, offset uintptr, elemsz uintptr, n int) unsafe.Pointer {

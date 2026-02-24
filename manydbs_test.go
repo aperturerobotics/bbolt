@@ -38,7 +38,7 @@ func createAndPutKeys(t *testing.T) {
 
 	bucketName := []byte("bucket")
 
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		err := db.Update(func(tx *Tx) error {
 			nodes, err := tx.CreateBucketIfNotExists(bucketName)
 			if err != nil {
@@ -67,7 +67,7 @@ func TestManyDBs(t *testing.T) {
 		t.Skip("skipping test in short mode")
 	}
 
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		t.Run(fmt.Sprintf("%d", i), createAndPutKeys)
 	}
 }

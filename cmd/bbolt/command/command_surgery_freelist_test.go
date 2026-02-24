@@ -54,7 +54,6 @@ func TestSurgery_Freelist_Rebuild(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			pageSize := 4096
 			db := btesting.MustCreateDBWithOption(t, &bolt.Options{

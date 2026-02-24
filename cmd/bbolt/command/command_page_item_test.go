@@ -52,9 +52,9 @@ func TestPageItemCommand_Run(t *testing.T) {
 					return bErr
 				}
 
-				for i := 0; i < 100; i++ {
+				for i := range 100 {
 					if tc.printable {
-						if bErr = b.Put([]byte(fmt.Sprintf("key_%d", i)), []byte(fmt.Sprintf("value_%d", i))); bErr != nil {
+						if bErr = b.Put(fmt.Appendf(nil, "key_%d", i), fmt.Appendf(nil, "value_%d", i)); bErr != nil {
 							return bErr
 						}
 					} else {

@@ -306,7 +306,7 @@ func TestFreelist_read(t *testing.T) {
 	page.SetCount(2)
 
 	// Insert 2 page ids.
-	ids := (*[3]common.Pgid)(unsafe.Pointer(uintptr(unsafe.Pointer(page)) + unsafe.Sizeof(*page)))
+	ids := (*[3]common.Pgid)(unsafe.Add(unsafe.Pointer(page), unsafe.Sizeof(*page)))
 	ids[0] = 23
 	ids[1] = 50
 
@@ -380,7 +380,7 @@ func TestFreelist_E2E_HappyPath(t *testing.T) {
 	// we should be able to allocate those pages independently however,
 	// map and array differ in the order they return the pages
 	expectedPgids := map[common.Pgid]struct{}{3: {}, 5: {}, 8: {}}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		allocated = f.Allocate(common.Txid(4), 1)
 		require.Contains(t, expectedPgids, allocated, "expected to find pgid %d", allocated)
 		require.False(t, f.Freed(allocated))
@@ -410,7 +410,7 @@ func TestFreelist_E2E_MultiSpanOverflows(t *testing.T) {
 		allocated := f.Allocate(common.Txid(11), pageNums)
 		require.Equal(t, expectedSpanStarts[i], allocated)
 		// ensure all pages in that span are not considered free anymore
-		for i := 0; i < pageNums; i++ {
+		for i := range pageNums {
 			require.False(t, f.Freed(allocated+common.Pgid(i)))
 		}
 	}
@@ -514,7 +514,7 @@ func TestFreelist_E2E_SerDe_AcrossImplementations(t *testing.T) {
 		t.Run(fmt.Sprintf("n=%d", size), func(t *testing.T) {
 			freelist := newTestFreelist()
 			expectedFreePgids := common.Pgids{}
-			for i := 0; i < size; i++ {
+			for i := range size {
 				pgid := common.Pgid(i + 2)
 				freelist.Free(common.Txid(1), common.NewPage(pgid, common.LeafPageFlag, 0, 0))
 				expectedFreePgids = append(expectedFreePgids, pgid)

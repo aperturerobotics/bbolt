@@ -170,10 +170,10 @@ func (db *DB) MustCheck() {
 func (db *DB) Fill(bucket []byte, numTx int, numKeysPerTx int,
 	keyGen func(tx int, key int) []byte,
 	valueGen func(tx int, key int) []byte) error {
-	for tr := 0; tr < numTx; tr++ {
+	for tr := range numTx {
 		err := db.Update(func(tx *bolt.Tx) error {
 			b, _ := tx.CreateBucketIfNotExists(bucket)
-			for i := 0; i < numKeysPerTx; i++ {
+			for i := range numKeysPerTx {
 				if err := b.Put(keyGen(tr, i), valueGen(tr, i)); err != nil {
 					return err
 				}

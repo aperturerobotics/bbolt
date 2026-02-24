@@ -3,8 +3,8 @@ package surgeon
 import (
 	"fmt"
 
-	"go.etcd.io/bbolt/internal/common"
-	"go.etcd.io/bbolt/internal/guts_cli"
+	"github.com/aperturerobotics/bbolt/internal/common"
+	"github.com/aperturerobotics/bbolt/internal/guts_cli"
 )
 
 func CopyPage(path string, srcPage common.Pgid, target common.Pgid) error {

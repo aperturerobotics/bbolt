@@ -3,7 +3,7 @@ package bbolt_test
 import (
 	"testing"
 
-	bolt "go.etcd.io/bbolt"
+	bolt "github.com/aperturerobotics/bbolt"
 )
 
 func TestSimulateNoFreeListSync_1op_1p(t *testing.T) {

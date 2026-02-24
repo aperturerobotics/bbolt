@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.etcd.io/bbolt/errors"
+	"github.com/aperturerobotics/bbolt/errors"
 )
 
 func TestOpenWithPreLoadFreelist(t *testing.T) {

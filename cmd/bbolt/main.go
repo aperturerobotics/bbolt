@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"go.etcd.io/bbolt/cmd/bbolt/command"
+	"github.com/aperturerobotics/bbolt/cmd/bbolt/command"
 )
 
 func main() {

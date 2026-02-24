@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	bolt "go.etcd.io/bbolt"
+	bolt "github.com/aperturerobotics/bbolt"
 )
 
 type compactOptions struct {

@@ -6,9 +6,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	bolt "go.etcd.io/bbolt"
-	"go.etcd.io/bbolt/internal/btesting"
-	"go.etcd.io/bbolt/internal/surgeon"
+	bolt "github.com/aperturerobotics/bbolt"
+	"github.com/aperturerobotics/bbolt/internal/btesting"
+	"github.com/aperturerobotics/bbolt/internal/surgeon"
 )
 
 func TestRevertMetaPage(t *testing.T) {

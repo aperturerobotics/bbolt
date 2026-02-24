@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	bolt "go.etcd.io/bbolt"
+	bolt "github.com/aperturerobotics/bbolt"
 )
 
 func newInfoCommand() *cobra.Command {

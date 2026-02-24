@@ -1,4 +1,4 @@
-module go.etcd.io/bbolt
+module github.com/aperturerobotics/bbolt
 
 go 1.24.0
 

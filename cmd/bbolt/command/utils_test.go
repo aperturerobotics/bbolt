@@ -15,9 +15,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	bolt "go.etcd.io/bbolt"
-	"go.etcd.io/bbolt/internal/common"
-	"go.etcd.io/bbolt/internal/guts_cli"
+	bolt "github.com/aperturerobotics/bbolt"
+	"github.com/aperturerobotics/bbolt/internal/common"
+	"github.com/aperturerobotics/bbolt/internal/guts_cli"
 )
 
 func loadMetaPage(t *testing.T, dbPath string, pageID uint64) *common.Meta {

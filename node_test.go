@@ -4,7 +4,7 @@ import (
 	"testing"
 	"unsafe"
 
-	"go.etcd.io/bbolt/internal/common"
+	"github.com/aperturerobotics/bbolt/internal/common"
 )
 
 // Ensure that a node can insert a key/value.

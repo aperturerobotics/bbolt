@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"unsafe"
 
-	"go.etcd.io/bbolt/errors"
-	"go.etcd.io/bbolt/internal/common"
+	"github.com/aperturerobotics/bbolt/errors"
+	"github.com/aperturerobotics/bbolt/internal/common"
 )
 
 const (

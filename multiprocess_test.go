@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	bolt "go.etcd.io/bbolt"
+	bolt "github.com/aperturerobotics/bbolt"
 )
 
 // Multi-process integration tests for cross-process coordination.

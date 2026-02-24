@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"go.etcd.io/bbolt/cmd/bbolt/command"
-	"go.etcd.io/bbolt/internal/btesting"
+	"github.com/aperturerobotics/bbolt/cmd/bbolt/command"
+	"github.com/aperturerobotics/bbolt/internal/btesting"
 )
 
 // Ensure the "info" command can print information about a database.

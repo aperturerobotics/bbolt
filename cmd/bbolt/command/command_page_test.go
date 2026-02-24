@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	bolt "go.etcd.io/bbolt"
-	"go.etcd.io/bbolt/cmd/bbolt/command"
-	"go.etcd.io/bbolt/internal/btesting"
+	bolt "github.com/aperturerobotics/bbolt"
+	"github.com/aperturerobotics/bbolt/cmd/bbolt/command"
+	"github.com/aperturerobotics/bbolt/internal/btesting"
 )
 
 func TestPageCommand_Run(t *testing.T) {

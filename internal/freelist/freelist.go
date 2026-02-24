@@ -1,7 +1,7 @@
 package freelist
 
 import (
-	"go.etcd.io/bbolt/internal/common"
+	"github.com/aperturerobotics/bbolt/internal/common"
 )
 
 type ReadWriter interface {

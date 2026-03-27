@@ -3,8 +3,19 @@ package bbolt
 import (
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"unsafe"
+)
+
+// processLockFiles tracks how many LockFile instances are open per path
+// within this process. Used by clearStaleWriterState to avoid probing
+// the fcntl lock when another opener in the same process holds it
+// (POSIX fcntl locks are per-process, not per-fd, so the probe would
+// always succeed and incorrectly reset live state).
+var (
+	processLockFiles   = make(map[string]int)
+	processLockFilesMu sync.Mutex
 )
 
 // Lock file magic number and version.
@@ -59,11 +70,10 @@ type lockFileHeader struct {
 	maxReaders uint32
 	numReaders uint32
 	// writerCount is the number of writer-capable openers (atomic).
-	// NOTE: After a process crash, this count may become stale and unable to detect that
-	// a writer-capable process is no longer alive (unlike reader slots which use PID-based
-	// detection). If a crash leaves writerCount > 0, the system will remain in multi-process
-	// mode (accessModeMulti), which is safe but suboptimal. The DecrementWriterCount underflow
-	// guard provides mitigation by preventing the count from going negative.
+	// Unlike reader slots which use PID-based detection, writerCount
+	// is just a counter. Stale counts from crashed processes are
+	// recovered by clearStaleWriterState during openLockFile, which
+	// probes the fcntl writer lock to determine liveness.
 	writerCount uint32
 	accessMode  uint32   // adaptive access mode (atomic), see accessMode* constants
 	_           [40]byte // padding to 64 bytes
@@ -189,7 +199,43 @@ func openLockFile(path string, maxReaders int) (*LockFile, error) {
 		return nil, fmt.Errorf("bbolt: unsupported lock file version: %d", version)
 	}
 
+	// Clear stale writer state left by crashed processes, but only if
+	// this is the first opener in the current process for this path.
+	// POSIX fcntl locks are per-process (not per-fd), so the liveness
+	// probe would always succeed when another opener in the same process
+	// holds the lock, incorrectly resetting live state.
+	processLockFilesMu.Lock()
+	firstOpener := processLockFiles[path] == 0
+	processLockFiles[path]++
+	processLockFilesMu.Unlock()
+
+	if firstOpener {
+		lf.clearStaleWriterState()
+	}
+
 	return lf, nil
+}
+
+// clearStaleWriterState resets writerCount and accessMode when no live
+// writer process holds the fcntl lock. This recovers from process crashes
+// that left the count elevated without decrementing.
+//
+// Uses TryAcquireWriterLock (non-blocking fcntl F_SETLK) as a liveness
+// probe: if the lock is available, no other process is between its
+// enterAccessMode and exitAccessMode calls, so the count is stale.
+func (lf *LockFile) clearStaleWriterState() {
+	h := lf.header()
+	if atomic.LoadUint32(&h.writerCount) == 0 {
+		return
+	}
+	acquired, err := lf.TryAcquireWriterLock()
+	if err != nil || !acquired {
+		return // another writer is alive, count is accurate
+	}
+	// No writer holds the lock. Reset stale state.
+	atomic.StoreUint32(&h.writerCount, 0)
+	atomic.StoreUint32(&h.accessMode, accessModeAvailable)
+	_ = lf.ReleaseWriterLock()
 }
 
 // accessModePtr returns a pointer to the accessMode field in the mmap'd header
@@ -237,6 +283,14 @@ func (lf *LockFile) DecrementWriterCount() uint32 {
 
 // Close unmaps the lock file data and closes the file descriptor.
 func (lf *LockFile) Close() error {
+	processLockFilesMu.Lock()
+	if n := processLockFiles[lf.path]; n <= 1 {
+		delete(processLockFiles, lf.path)
+	} else {
+		processLockFiles[lf.path] = n - 1
+	}
+	processLockFilesMu.Unlock()
+
 	var errs []error
 
 	if lf.data != nil {

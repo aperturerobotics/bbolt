@@ -143,6 +143,118 @@ func TestLockFileAccessModeSharedVisibility(t *testing.T) {
 	}
 }
 
+// TestLockFileClearStaleWriterState verifies that opening a lock file
+// with a stale writerCount (from a crashed process) resets the count
+// and accessMode when no live writer holds the fcntl lock.
+func TestLockFileClearStaleWriterState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db-lock")
+
+	// Open and simulate a crashed process: increment writerCount
+	// and set accessMode to multi, then close without decrementing.
+	lf1, err := openLockFile(path, defaultMaxReaders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lf1.IncrementWriterCount()
+	lf1.IncrementWriterCount()
+	lf1.IncrementWriterCount()
+	lf1.SetAccessMode(accessModeMulti)
+	// Close without decrementing (simulates crash).
+	lf1.Close()
+
+	// Reopen. clearStaleWriterState should detect no live writer
+	// and reset the stale count.
+	lf2, err := openLockFile(path, defaultMaxReaders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lf2.Close()
+
+	h := lf2.header()
+	if wc := h.writerCount; wc != 0 {
+		t.Fatalf("writerCount=%d after recovery, want 0", wc)
+	}
+	if m := lf2.AccessMode(); m != accessModeAvailable {
+		t.Fatalf("accessMode=%d after recovery, want %d", m, accessModeAvailable)
+	}
+}
+
+// NOTE: The "live writer preserves count" scenario (clearStaleWriterState
+// does NOT reset when another process holds the fcntl lock) cannot be tested
+// in-process because POSIX fcntl locks are per-process, not per-fd. The
+// probe would always succeed within the same process. This case is implicitly
+// covered by the process-local guard in openLockFile (second opener skips
+// clearStaleWriterState entirely) and would need a cross-process test in
+// multiprocess_test.go for full verification.
+
+// TestDBOpenAfterCrashRecovery verifies the full scenario: open DB, write
+// data, simulate crash (close without proper cleanup by corrupting the
+// lock file), reopen and verify the DB is fully functional.
+func TestDBOpenAfterCrashRecovery(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	// Open DB, write data, close normally.
+	db, err := Open(dbPath, 0600, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := db.Update(func(tx *Tx) error {
+		b, err := tx.CreateBucket([]byte("test"))
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte("k"), []byte("v"))
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	db.Close()
+
+	// Simulate a crash: reopen the lock file directly and corrupt
+	// the writer state (high count, multi mode) without holding any
+	// fcntl lock.
+	lf, err := openLockFile(dbPath+"-lock", defaultMaxReaders)
+	if err != nil {
+		t.Fatalf("openLockFile: %v", err)
+	}
+	// clearStaleWriterState already ran, so we need to corrupt after open.
+	lf.IncrementWriterCount()
+	lf.IncrementWriterCount()
+	lf.IncrementWriterCount()
+	lf.SetAccessMode(accessModeMulti)
+	lf.Close()
+
+	// Reopen the DB. It should recover the stale lock state and work.
+	db2, err := Open(dbPath, 0600, nil)
+	if err != nil {
+		t.Fatalf("Open after crash: %v", err)
+	}
+	defer db2.Close()
+
+	if !db2.singleProcess {
+		t.Fatal("expected singleProcess=true after crash recovery")
+	}
+
+	// Verify data is intact.
+	if err := db2.View(func(tx *Tx) error {
+		v := tx.Bucket([]byte("test")).Get([]byte("k"))
+		if string(v) != "v" {
+			return fmt.Errorf("got %q, want %q", v, "v")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("View: %v", err)
+	}
+
+	// Write transaction works (the original bug: this would hang forever).
+	if err := db2.Update(func(tx *Tx) error {
+		return tx.Bucket([]byte("test")).Put([]byte("k2"), []byte("v2"))
+	}); err != nil {
+		t.Fatalf("Update after recovery: %v", err)
+	}
+}
+
 // --- DB-level tests ---
 
 // TestDBAdaptiveSingleProcess verifies that a single writer-capable

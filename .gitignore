@@ -1,5 +1,6 @@
 *.prof
 *.test
+/.tmp
 *.swp
 /bin/
 cover.out

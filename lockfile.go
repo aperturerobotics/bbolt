@@ -75,8 +75,9 @@ type lockFileHeader struct {
 	// recovered by clearStaleWriterState during openLockFile, which
 	// probes the fcntl writer lock to determine liveness.
 	writerCount uint32
-	accessMode  uint32   // adaptive access mode (atomic), see accessMode* constants
-	_           [40]byte // padding to 64 bytes
+	accessMode    uint32   // adaptive access mode (atomic), see accessMode* constants
+	commitCounter uint64   // atomic commit counter, incremented after each write tx commit
+	_             [32]byte // padding to 64 bytes
 }
 
 // readerSlot documents the memory layout of a single reader entry in
@@ -118,6 +119,11 @@ type LockFile struct {
 // MaxReaders returns the maximum number of reader slots.
 func (lf *LockFile) MaxReaders() int {
 	return lf.maxReaders
+}
+
+// Path returns the filesystem path of the lock file.
+func (lf *LockFile) Path() string {
+	return lf.path
 }
 
 // header returns a pointer to the lockFileHeader in the mmap'd region.
@@ -257,6 +263,38 @@ func (lf *LockFile) CASAccessMode(old, new uint32) bool {
 // SetAccessMode stores the access mode atomically.
 func (lf *LockFile) SetAccessMode(mode uint32) {
 	atomic.StoreUint32(lf.accessModePtr(), mode)
+}
+
+// commitCounterPtr returns a pointer to the commitCounter field in the mmap'd
+// header for use with sync/atomic operations.
+func (lf *LockFile) commitCounterPtr() *uint64 {
+	return &lf.header().commitCounter
+}
+
+// CommitCounter returns the current commit counter value atomically.
+// The counter is incremented after each successful write transaction commit.
+// Readable by any process via atomic load on the shared mmap'd memory.
+func (lf *LockFile) CommitCounter() uint64 {
+	return atomic.LoadUint64(lf.commitCounterPtr())
+}
+
+// commitCounterNotifyOffset is a byte offset in the lock file header padding
+// used solely to trigger fsnotify watchers in other processes. A pwrite to
+// this offset after each atomic counter increment generates a filesystem
+// write event without affecting any meaningful data.
+const commitCounterNotifyOffset = 32
+
+// IncrementCommitCounter atomically increments the commit counter and returns
+// the new value. Also writes a byte to the lock file to trigger fsnotify
+// watchers in other processes.
+func (lf *LockFile) IncrementCommitCounter() uint64 {
+	val := atomic.AddUint64(lf.commitCounterPtr(), 1)
+	// Pwrite a byte to trigger fsnotify watchers. The offset is in the
+	// padding region of the header and the value is meaningless.
+	if lf.fd != nil {
+		_, _ = lf.fd.WriteAt([]byte{byte(val)}, commitCounterNotifyOffset)
+	}
+	return val
 }
 
 // IncrementWriterCount atomically increments the writer-capable opener count

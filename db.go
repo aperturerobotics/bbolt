@@ -1,6 +1,7 @@
 package bbolt
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	berrors "github.com/aperturerobotics/bbolt/errors"
 	"github.com/aperturerobotics/bbolt/internal/common"
 	fl "github.com/aperturerobotics/bbolt/internal/freelist"
+	"github.com/aperturerobotics/fsnotify"
 )
 
 // The time elapsed between consecutive file locking attempts.
@@ -164,6 +166,84 @@ type DB struct {
 // Path returns the path to currently open database file.
 func (db *DB) Path() string {
 	return db.path
+}
+
+// CommitCounter returns the current commit counter from the mmap'd lock file
+// header. The counter is incremented after each successful write transaction
+// commit. Any process with the DB open can read this value via atomic load on
+// shared memory (zero syscall cost). Returns 0 if no lock file is present
+// (e.g. in-memory database).
+func (db *DB) CommitCounter() uint64 {
+	if db.lockFile == nil {
+		return 0
+	}
+	return db.lockFile.CommitCounter()
+}
+
+// WaitCommitCounter waits until the mmap'd commit counter exceeds lastSeen
+// or ctx is cancelled. Uses fsnotify to watch the lock file for write events
+// triggered by IncrementCommitCounter's pwrite, avoiding busy-polling.
+// Falls back to 50ms polling if fsnotify setup fails or no lock file exists.
+func (db *DB) WaitCommitCounter(ctx context.Context, lastSeen uint64) (uint64, error) {
+	// Fast path: already changed.
+	current := db.CommitCounter()
+	if current > lastSeen {
+		return current, nil
+	}
+
+	// Try fsnotify on the lock file.
+	if db.lockFile != nil {
+		watcher, err := fsnotify.NewWatcher()
+		if err == nil {
+			defer watcher.Close()
+			if err := watcher.Add(db.lockFile.Path()); err == nil {
+				return db.waitCommitCounterFsnotify(ctx, lastSeen, watcher)
+			}
+		}
+	}
+
+	// Fallback: poll with 50ms interval.
+	return db.waitCommitCounterPoll(ctx, lastSeen)
+}
+
+// waitCommitCounterFsnotify waits for commit counter changes using fsnotify.
+func (db *DB) waitCommitCounterFsnotify(ctx context.Context, lastSeen uint64, watcher *fsnotify.Watcher) (uint64, error) {
+	for {
+		current := db.CommitCounter()
+		if current > lastSeen {
+			return current, nil
+		}
+		select {
+		case <-ctx.Done():
+			return current, ctx.Err()
+		case _, ok := <-watcher.Events:
+			if !ok {
+				return db.CommitCounter(), nil
+			}
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return db.CommitCounter(), nil
+			}
+			// On error, fall back to polling.
+			_ = err
+			return db.waitCommitCounterPoll(ctx, lastSeen)
+		}
+	}
+}
+
+// waitCommitCounterPoll is the polling fallback for WaitCommitCounter.
+func (db *DB) waitCommitCounterPoll(ctx context.Context, lastSeen uint64) (uint64, error) {
+	for {
+		current := db.CommitCounter()
+		if current > lastSeen {
+			return current, nil
+		}
+		select {
+		case <-ctx.Done():
+			return current, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // GoString returns the Go string representation of the database.

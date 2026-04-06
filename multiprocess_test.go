@@ -59,6 +59,8 @@ func runChildCommand(cmd string) {
 		childRapidOpenClose(dbPath)
 	case "write-and-hang":
 		childWriteAndHang(dbPath)
+	case "write-and-report-counter":
+		childWriteAndReportCounter(dbPath)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown child command: %s\n", cmd)
 		os.Exit(1)
@@ -509,6 +511,56 @@ func childWriteAndHang(dbPath string) {
 
 	// Sleep until killed. Do NOT commit or close.
 	time.Sleep(30 * time.Second)
+}
+
+// childWriteAndReportCounter opens the DB, performs N write transactions,
+// and writes the final commit counter to a signal file.
+func childWriteAndReportCounter(dbPath string) {
+	signalPath := os.Getenv("BBOLT_TEST_SIGNAL_PATH")
+	bucketName := os.Getenv("BBOLT_TEST_BUCKET")
+	if bucketName == "" {
+		bucketName = "test"
+	}
+	numWrites, _ := strconv.Atoi(os.Getenv("BBOLT_TEST_NUM_WRITES"))
+	if numWrites <= 0 {
+		numWrites = 1
+	}
+
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 10 * time.Second})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "child open db: %v\n", err)
+		os.Exit(1)
+	}
+
+	for i := range numWrites {
+		err = db.Update(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte(bucketName))
+			if b == nil {
+				return fmt.Errorf("bucket %q not found", bucketName)
+			}
+			key := fmt.Sprintf("child-write-%d", i)
+			return b.Put([]byte(key), []byte("value"))
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "child write %d: %v\n", i, err)
+			os.Exit(1)
+		}
+	}
+
+	counter := db.CommitCounter()
+	if err := db.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "child close db: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Write the counter value to the signal file.
+	if signalPath != "" {
+		data := fmt.Sprintf("%d", counter)
+		if err := os.WriteFile(signalPath, []byte(data), 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "child write signal: %v\n", err)
+			os.Exit(1)
+		}
+	}
 }
 
 // TestHelperProcess is a no-op test target that exists so child processes
@@ -1486,5 +1538,90 @@ func TestMultiProcessWriterCrashRecovery(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("verify recovered data: %v", err)
+	}
+}
+
+// TestMultiProcessCommitCounter verifies that the mmap'd commit counter
+// in the lock file header is visible across processes. Process A creates
+// the DB and writes once (counter=1). Process B writes 3 times. Process A
+// then reads the counter and verifies it reflects all 4 commits.
+func TestMultiProcessCommitCounter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping multi-process test in short mode")
+	}
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	// Parent creates DB with initial data (1 commit).
+	db, err := bolt.Open(dbPath, 0600, nil)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	err = db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucket([]byte("test"))
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte("init"), []byte("value"))
+	})
+	if err != nil {
+		t.Fatalf("initial write: %v", err)
+	}
+
+	counterAfterInit := db.CommitCounter()
+	if counterAfterInit != 1 {
+		t.Fatalf("counter after init = %d, want 1", counterAfterInit)
+	}
+
+	// Close DB so child can open it.
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	// Spawn child that writes 3 times and reports counter.
+	signalPath := filepath.Join(dir, "child-done")
+	child := spawnChild(t, "write-and-report-counter", dbPath,
+		"BBOLT_TEST_SIGNAL_PATH="+signalPath,
+		"BBOLT_TEST_BUCKET=test",
+		"BBOLT_TEST_NUM_WRITES=3",
+	)
+	if err := child.Start(); err != nil {
+		t.Fatalf("start child: %v", err)
+	}
+
+	if err := waitForSignal(signalPath, 10*time.Second); err != nil {
+		t.Fatalf("child signal: %v", err)
+	}
+	if err := child.Wait(); err != nil {
+		t.Fatalf("child exited with error: %v", err)
+	}
+
+	// Read the counter value reported by the child.
+	data, err := os.ReadFile(signalPath)
+	if err != nil {
+		t.Fatalf("read signal: %v", err)
+	}
+	childCounter, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		t.Fatalf("parse child counter: %v", err)
+	}
+
+	// Child saw 4 total commits (1 parent init + 3 child writes).
+	if childCounter != 4 {
+		t.Fatalf("child counter = %d, want 4", childCounter)
+	}
+
+	// Re-open the DB in the parent and verify the counter persists via mmap.
+	db, err = bolt.Open(dbPath, 0600, nil)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer db.Close()
+
+	counterAfterChild := db.CommitCounter()
+	if counterAfterChild != 4 {
+		t.Fatalf("parent counter after reopen = %d, want 4", counterAfterChild)
 	}
 }

@@ -271,6 +271,12 @@ func (tx *Tx) Commit() (err error) {
 	}
 	tx.stats.IncWriteTime(time.Since(startTime))
 
+	// Increment the commit counter so cross-process observers can detect
+	// the new commit via atomic load on the mmap'd lock file header.
+	if tx.db.lockFile != nil {
+		tx.db.lockFile.IncrementCommitCounter()
+	}
+
 	// Finalize the transaction.
 	tx.close()
 

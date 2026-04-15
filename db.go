@@ -897,7 +897,18 @@ func (db *DB) Logger() Logger {
 	return db.logger
 }
 
+func (db *DB) validateLockFile() error {
+	if db == nil || db.lockFile == nil {
+		return nil
+	}
+	return db.lockFile.ValidatePath()
+}
+
 func (db *DB) beginTx() (*Tx, error) {
+	if err := db.validateLockFile(); err != nil {
+		return nil, err
+	}
+
 	// Check if another process needs us to escalate from single to multi mode.
 	db.checkEscalation()
 
@@ -977,6 +988,9 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	if db.readOnly {
 		return nil, berrors.ErrDatabaseReadOnly
 	}
+	if err := db.validateLockFile(); err != nil {
+		return nil, err
+	}
 
 	// Check if another process needs us to escalate from single to multi mode.
 	db.checkEscalation()
@@ -991,6 +1005,11 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	// per-process (not per-fd or per-thread).
 	if db.lockFile != nil {
 		if err := db.lockFile.AcquireWriterLock(); err != nil {
+			db.rwlock.Unlock()
+			return nil, err
+		}
+		if err := db.validateLockFile(); err != nil {
+			_ = db.lockFile.ReleaseWriterLock()
 			db.rwlock.Unlock()
 			return nil, err
 		}

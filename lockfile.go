@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"unsafe"
+
+	berrors "github.com/aperturerobotics/bbolt/errors"
 )
 
 // processLockFiles tracks how many LockFile instances are open per path
@@ -74,7 +76,7 @@ type lockFileHeader struct {
 	// is just a counter. Stale counts from crashed processes are
 	// recovered by clearStaleWriterState during openLockFile, which
 	// probes the fcntl writer lock to determine liveness.
-	writerCount uint32
+	writerCount   uint32
 	accessMode    uint32   // adaptive access mode (atomic), see accessMode* constants
 	commitCounter uint64   // atomic commit counter, incremented after each write tx commit
 	_             [32]byte // padding to 64 bytes
@@ -124,6 +126,28 @@ func (lf *LockFile) MaxReaders() int {
 // Path returns the filesystem path of the lock file.
 func (lf *LockFile) Path() string {
 	return lf.path
+}
+
+// ValidatePath returns an error if the lock file path no longer refers to the
+// same open coordination file descriptor.
+func (lf *LockFile) ValidatePath() error {
+	if lf == nil || lf.fd == nil {
+		return nil
+	}
+
+	fdInfo, err := lf.fd.Stat()
+	if err != nil {
+		return fmt.Errorf("bbolt: stat open lock file (%s): %w", lf.path, err)
+	}
+	pathInfo, err := os.Stat(lf.path)
+	if err != nil {
+		return fmt.Errorf("%w: stat lock file path (%s): %v", berrors.ErrLockFileChanged, lf.path, err)
+	}
+	if os.SameFile(fdInfo, pathInfo) {
+		return nil
+	}
+
+	return fmt.Errorf("%w: lock file path (%s) no longer matches the open coordination file", berrors.ErrLockFileChanged, lf.path)
 }
 
 // header returns a pointer to the lockFileHeader in the mmap'd region.

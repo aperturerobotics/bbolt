@@ -187,6 +187,10 @@ func (tx *Tx) Commit() (err error) {
 	} else if !tx.writable {
 		return berrors.ErrTxNotWritable
 	}
+	if err = tx.db.validateLockFile(); err != nil {
+		tx.rollback()
+		return err
+	}
 
 	// TODO(benbjohnson): Use vectorized I/O to write out dirty pages.
 

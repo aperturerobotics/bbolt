@@ -378,10 +378,9 @@ func TestBucket_Delete_FreelistOverflow(t *testing.T) {
 		t.Skip("skipping test in short mode.")
 	}
 
-	db := btesting.MustCreateDB(t)
+	db := btesting.MustCreateDBWithOption(t, &bolt.Options{PageSize: 1024})
 
 	k := make([]byte, 16)
-	// The bigger the pages - the more values we need to write.
 	for i := uint64(0); i < 2*uint64(db.Info().PageSize); i++ {
 		if err := db.Update(func(tx *bolt.Tx) error {
 			b, err := tx.CreateBucketIfNotExists([]byte("0"))

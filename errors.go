@@ -37,6 +37,12 @@ var (
 	//
 	// Deprecated: Use the error variables defined in the bbolt/errors package.
 	ErrTimeout = errors.ErrTimeout
+
+	// ErrLockFileChanged is returned when the lock file path no longer refers to
+	// the same open coordination file. The database must be closed and reopened.
+	//
+	// Deprecated: Use the error variables defined in the bbolt/errors package.
+	ErrLockFileChanged = errors.ErrLockFileChanged
 )
 
 // These errors can occur when beginning or committing a Tx.

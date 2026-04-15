@@ -27,6 +27,10 @@ var (
 	// ErrTimeout is returned when a database cannot obtain an exclusive lock
 	// on the data file after the timeout passed to Open().
 	ErrTimeout = errors.New("timeout")
+
+	// ErrLockFileChanged is returned when the lock file path no longer refers to
+	// the same open coordination file. The database must be closed and reopened.
+	ErrLockFileChanged = errors.New("lock file changed")
 )
 
 // These errors can occur when beginning or committing a Tx.

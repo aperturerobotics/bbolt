@@ -105,6 +105,20 @@ func TestFreelist_release(t *testing.T) {
 	}
 }
 
+func TestFreelist_releasePendingPages_txidZero(t *testing.T) {
+	f := newTestFreelist()
+	f.AddReadonlyTXID(0)
+	f.Free(5, common.NewPage(10, common.LeafPageFlag, 0, 0))
+	f.ReleasePendingPages()
+
+	require.Zero(t, f.Allocate(6, 1))
+
+	f.RemoveReadonlyTXID(0)
+	f.ReleasePendingPages()
+
+	require.Equal(t, common.Pgid(10), f.Allocate(6, 1))
+}
+
 // Ensure that releaseRange handles boundary conditions correctly
 func TestFreelist_releaseRange(t *testing.T) {
 	type testRange struct {

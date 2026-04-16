@@ -141,7 +141,8 @@ func (t txIDx) Less(i, j int) bool { return t[i] < t[j] }
 func (t *shared) ReleasePendingPages() {
 	// Free all pending pages prior to the earliest open transaction.
 	sort.Sort(txIDx(t.readonlyTXIDs))
-	minid := common.Txid(math.MaxUint64)
+	maxTxid := common.Txid(math.MaxUint64)
+	minid := maxTxid
 	if len(t.readonlyTXIDs) > 0 {
 		minid = t.readonlyTXIDs[0]
 	}
@@ -150,10 +151,15 @@ func (t *shared) ReleasePendingPages() {
 	}
 	// Release unused txid extents.
 	for _, tid := range t.readonlyTXIDs {
-		t.releaseRange(minid, tid-1)
+		if minid < tid {
+			t.releaseRange(minid, tid-1)
+		}
+		if tid == maxTxid {
+			return
+		}
 		minid = tid + 1
 	}
-	t.releaseRange(minid, common.Txid(math.MaxUint64))
+	t.releaseRange(minid, maxTxid)
 	// Any page both allocated and freed in an extent is safe to release.
 }
 

@@ -140,6 +140,8 @@ type DB struct {
 	readerSlot    int    // index of this DB instance's reader slot in the lock file
 	lastKnownTxid uint64 // last meta txid seen by this process (for detecting external commits)
 	singleProcess bool   // true when this is the sole writer-capable opener (fast path)
+	// activeReadTxIDs counts active local read-only txids by snapshot txid.
+	activeReadTxIDs map[common.Txid]uint64
 
 	freelist     fl.Interface
 	freelistLoad sync.Once
@@ -904,6 +906,75 @@ func (db *DB) validateLockFile() error {
 	return db.lockFile.ValidatePath()
 }
 
+func (db *DB) addReadonlyTxid(txid common.Txid) {
+	if db.activeReadTxIDs == nil {
+		db.activeReadTxIDs = make(map[common.Txid]uint64)
+	}
+	db.activeReadTxIDs[txid]++
+
+	if db.freelist != nil {
+		db.freelist.AddReadonlyTXID(txid)
+	}
+
+	db.syncReaderSlotTxid()
+}
+
+func (db *DB) removeReadonlyTxid(txid common.Txid) {
+	if db.freelist != nil {
+		db.freelist.RemoveReadonlyTXID(txid)
+	}
+
+	count := db.activeReadTxIDs[txid]
+	if count <= 1 {
+		delete(db.activeReadTxIDs, txid)
+		db.syncReaderSlotTxid()
+		return
+	}
+	db.activeReadTxIDs[txid] = count - 1
+
+	db.syncReaderSlotTxid()
+}
+
+func (db *DB) restoreReadonlyTxidsToFreelist() {
+	if db.freelist == nil {
+		return
+	}
+
+	for txid, count := range db.activeReadTxIDs {
+		for range count {
+			db.freelist.AddReadonlyTXID(txid)
+		}
+	}
+}
+
+func (db *DB) syncReaderSlotTxid() {
+	if db.lockFile == nil {
+		return
+	}
+
+	oldest, ok := db.oldestReadonlyTxid()
+	if !ok {
+		db.lockFile.ClearSlotTxid(db.readerSlot)
+		return
+	}
+
+	db.lockFile.SetSlotTxid(db.readerSlot, uint64(oldest))
+}
+
+func (db *DB) oldestReadonlyTxid() (common.Txid, bool) {
+	var oldest common.Txid
+	var ok bool
+
+	for txid := range db.activeReadTxIDs {
+		if !ok || txid < oldest {
+			oldest = txid
+			ok = true
+		}
+	}
+
+	return oldest, ok
+}
+
 func (db *DB) beginTx() (*Tx, error) {
 	if err := db.validateLockFile(); err != nil {
 		return nil, err
@@ -956,21 +1027,10 @@ func (db *DB) beginTx() (*Tx, error) {
 	t := &Tx{}
 	t.init(db)
 
-	if db.freelist != nil {
-		db.freelist.AddReadonlyTXID(t.meta.Txid())
-	}
+	db.addReadonlyTxid(t.meta.Txid())
 
 	// Unlock the meta pages.
 	db.metalock.Unlock()
-
-	// Register the reader's snapshot txid in the cross-process reader table.
-	// There is a brief window between metalock.Unlock() above and SetSlotTxid() below where
-	// the reader's txid is not yet visible to other processes. This is safe because the freelist
-	// release logic uses release(minid - 1), which means pages pending at txid T are safe
-	// even with a reader at txid T (the reader doesn't block release of its own snapshot).
-	if db.lockFile != nil {
-		db.lockFile.SetSlotTxid(db.readerSlot, uint64(t.meta.Txid()))
-	}
 
 	// Update the transaction stats.
 	if db.stats != nil {
@@ -1196,6 +1256,7 @@ func (db *DB) refreshForWriter() error {
 	// with no external resources, so it is safe to let the GC reclaim it.
 	db.freelist = newFreelist(db.FreelistType)
 	db.freelist.Read(db.page(meta.Freelist()))
+	db.restoreReadonlyTxidsToFreelist()
 	if db.stats != nil {
 		db.stats.FreePageN = db.freelist.FreeCount()
 	}
@@ -1204,20 +1265,13 @@ func (db *DB) refreshForWriter() error {
 
 // removeTx removes a transaction from the database.
 func (db *DB) removeTx(tx *Tx) {
-	// Clear the reader's txid in the cross-process reader table.
-	if db.lockFile != nil {
-		db.lockFile.ClearSlotTxid(db.readerSlot)
-	}
-
 	// Release the read lock on the mmap.
 	db.mmaplock.RUnlock()
 
 	// Use the meta lock to restrict access to the DB object.
 	db.metalock.Lock()
 
-	if db.freelist != nil {
-		db.freelist.RemoveReadonlyTXID(tx.meta.Txid())
-	}
+	db.removeReadonlyTxid(tx.meta.Txid())
 
 	// Unlock the meta pages.
 	db.metalock.Unlock()

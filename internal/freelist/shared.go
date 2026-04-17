@@ -18,7 +18,7 @@ type txPending struct {
 type shared struct {
 	Interface
 
-	readonlyTXIDs []common.Txid               // all readonly transaction IDs.
+	readonlyTXIDs map[common.Txid]int         // refcount of readonly transaction IDs.
 	allocs        map[common.Pgid]common.Txid // mapping of Txid that allocated a pgid.
 	cache         map[common.Pgid]struct{}    // fast lookup of all free and pending page ids.
 	pending       map[common.Txid]*txPending  // mapping of soon-to-be free page ids by tx.
@@ -118,17 +118,20 @@ func (t *shared) Rollback(txid common.Txid) {
 }
 
 func (t *shared) AddReadonlyTXID(tid common.Txid) {
-	t.readonlyTXIDs = append(t.readonlyTXIDs, tid)
+	if t.readonlyTXIDs == nil {
+		t.readonlyTXIDs = make(map[common.Txid]int)
+	}
+	t.readonlyTXIDs[tid]++
 }
 
 func (t *shared) RemoveReadonlyTXID(tid common.Txid) {
-	for i := range t.readonlyTXIDs {
-		if t.readonlyTXIDs[i] == tid {
-			last := len(t.readonlyTXIDs) - 1
-			t.readonlyTXIDs[i] = t.readonlyTXIDs[last]
-			t.readonlyTXIDs = t.readonlyTXIDs[:last]
-			break
-		}
+	if t.readonlyTXIDs == nil {
+		return
+	}
+	if t.readonlyTXIDs[tid] <= 1 {
+		delete(t.readonlyTXIDs, tid)
+	} else {
+		t.readonlyTXIDs[tid]--
 	}
 }
 
@@ -139,18 +142,24 @@ func (t txIDx) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
 func (t txIDx) Less(i, j int) bool { return t[i] < t[j] }
 
 func (t *shared) ReleasePendingPages() {
+	// Build a sorted unique list of readonly transaction IDs.
+	sortedTXIDs := make(txIDx, 0, len(t.readonlyTXIDs))
+	for tid := range t.readonlyTXIDs {
+		sortedTXIDs = append(sortedTXIDs, tid)
+	}
+	sort.Sort(sortedTXIDs)
+
 	// Free all pending pages prior to the earliest open transaction.
-	sort.Sort(txIDx(t.readonlyTXIDs))
 	maxTxid := common.Txid(math.MaxUint64)
 	minid := maxTxid
-	if len(t.readonlyTXIDs) > 0 {
-		minid = t.readonlyTXIDs[0]
+	if len(sortedTXIDs) > 0 {
+		minid = sortedTXIDs[0]
 	}
 	if minid > 0 {
 		t.release(minid - 1)
 	}
 	// Release unused txid extents.
-	for _, tid := range t.readonlyTXIDs {
+	for _, tid := range sortedTXIDs {
 		if minid < tid {
 			t.releaseRange(minid, tid-1)
 		}

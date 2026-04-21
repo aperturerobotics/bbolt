@@ -76,6 +76,40 @@ func TestTxCommitFailsWhenLockFileRemoved(t *testing.T) {
 	}
 }
 
+func TestTxCommitFailsWhenLockFileRemovedAfterCommitStarts(t *testing.T) {
+	db := openTestDBWithBucket(t)
+	defer db.Close()
+
+	lockPath := db.Path() + "-lock"
+	db.ops.beforeCommitPhase = func(phase string) {
+		if phase != "before-rebalance" {
+			return
+		}
+		db.ops.beforeCommitPhase = nil
+		if err := os.Remove(lockPath); err != nil {
+			t.Fatalf("remove lock file path: %v", err)
+		}
+	}
+
+	tx, err := db.Begin(true)
+	if err != nil {
+		t.Fatalf("Begin(true): %v", err)
+	}
+
+	b := tx.Bucket([]byte("test"))
+	if b == nil {
+		t.Fatal("bucket not found")
+	}
+	if err := b.Put([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	err = tx.Commit()
+	if !errors.Is(err, berrors.ErrLockFileChanged) {
+		t.Fatalf("Commit() error = %v, want %v", err, berrors.ErrLockFileChanged)
+	}
+}
+
 func openTestDBWithBucket(t *testing.T) *DB {
 	t.Helper()
 

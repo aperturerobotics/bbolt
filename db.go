@@ -157,7 +157,8 @@ type DB struct {
 	statlock sync.RWMutex // Protects stats access.
 
 	ops struct {
-		writeAt func(b []byte, off int64) (n int, err error)
+		writeAt           func(b []byte, off int64) (n int, err error)
+		beforeCommitPhase func(phase string)
 	}
 
 	// Read only mode.
@@ -904,6 +905,12 @@ func (db *DB) validateLockFile() error {
 		return nil
 	}
 	return db.lockFile.ValidatePath()
+}
+
+func (db *DB) panicIfLockFileChanged() {
+	if err := db.validateLockFile(); err != nil {
+		panic(lockFileChangedPanic{err: err})
+	}
 }
 
 func (db *DB) addReadonlyTxid(txid common.Txid) {

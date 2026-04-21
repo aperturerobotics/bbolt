@@ -43,6 +43,14 @@ type Tx struct {
 	WriteFlag int
 }
 
+type lockFileChangedPanic struct {
+	err error
+}
+
+func (p lockFileChangedPanic) Error() string {
+	return p.err.Error()
+}
+
 // init initializes the transaction.
 func (tx *Tx) init(db *DB) {
 	tx.db = db
@@ -181,6 +189,27 @@ func (tx *Tx) Commit() (err error) {
 		}()
 	}
 
+	defer func() {
+		if p := recover(); p != nil {
+			switch v := p.(type) {
+			case lockFileChangedPanic:
+				tx.rollback()
+				err = v.err
+				return
+			case *lockFileChangedPanic:
+				tx.rollback()
+				err = v.err
+				return
+			}
+			if lockErr := tx.db.validateLockFile(); errors.Is(lockErr, berrors.ErrLockFileChanged) {
+				tx.rollback()
+				err = lockErr
+				return
+			}
+			panic(p)
+		}
+	}()
+
 	common.Assert(!tx.managed, "managed tx commit not allowed")
 	if tx.db == nil {
 		return berrors.ErrTxClosed
@@ -191,6 +220,10 @@ func (tx *Tx) Commit() (err error) {
 		tx.rollback()
 		return err
 	}
+	if tx.db.ops.beforeCommitPhase != nil {
+		tx.db.ops.beforeCommitPhase("before-rebalance")
+	}
+	tx.db.panicIfLockFileChanged()
 
 	// TODO(benbjohnson): Use vectorized I/O to write out dirty pages.
 
@@ -202,6 +235,10 @@ func (tx *Tx) Commit() (err error) {
 	}
 
 	opgid := tx.meta.Pgid()
+	if tx.db.ops.beforeCommitPhase != nil {
+		tx.db.ops.beforeCommitPhase("before-spill")
+	}
+	tx.db.panicIfLockFileChanged()
 
 	// spill data onto dirty pages.
 	startTime = time.Now()
@@ -217,6 +254,7 @@ func (tx *Tx) Commit() (err error) {
 
 	// Free the old freelist because commit writes out a fresh freelist.
 	if tx.meta.Freelist() != common.PgidNoFreelist {
+		tx.db.panicIfLockFileChanged()
 		tx.db.freelist.Free(tx.meta.Txid(), tx.db.page(tx.meta.Freelist()))
 	}
 

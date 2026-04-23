@@ -66,6 +66,9 @@ func TestManyDBs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping test in short mode")
 	}
+	if os.Getenv("BBOLT_LONG_TESTS") == "" {
+		t.Skip("skipping long test; set BBOLT_LONG_TESTS=1 to enable")
+	}
 
 	for i := range 100 {
 		t.Run(fmt.Sprintf("%d", i), createAndPutKeys)

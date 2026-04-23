@@ -180,6 +180,26 @@ func TestLockFileClearStaleWriterState(t *testing.T) {
 	}
 }
 
+func TestLockFileClearStaleWriterStatePreservesLiveReaderSlot(t *testing.T) {
+	lf := openTestLockFile(t)
+	slot, err := lf.AcquireReaderSlot()
+	if err != nil {
+		t.Fatalf("AcquireReaderSlot: %v", err)
+	}
+	defer lf.ReleaseReaderSlot(slot)
+
+	lf.IncrementWriterCount()
+	lf.SetAccessMode(accessModeSingle)
+	lf.clearStaleWriterState()
+
+	if wc := lf.header().writerCount; wc != 1 {
+		t.Fatalf("writerCount=%d after live reader check, want 1", wc)
+	}
+	if m := lf.AccessMode(); m != accessModeSingle {
+		t.Fatalf("accessMode=%d after live reader check, want %d", m, accessModeSingle)
+	}
+}
+
 // NOTE: The "live writer preserves count" scenario (clearStaleWriterState
 // does NOT reset when another process holds the fcntl lock) cannot be tested
 // in-process because POSIX fcntl locks are per-process, not per-fd. The

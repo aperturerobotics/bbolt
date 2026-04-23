@@ -592,6 +592,45 @@ func TestDB_Open_ReadOnly(t *testing.T) {
 	}
 }
 
+func TestDB_Open_ReadOnly_MissingLockFileDoesNotCreateSidecar(t *testing.T) {
+	db := btesting.MustCreateDB(t)
+	if err := db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucket([]byte("widgets"))
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte("foo"), []byte("bar"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := db.Path()
+	lockPath := path + "-lock"
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+
+	readOnlyDB, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnlyDB.Close()
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lock file exists after read-only open: %v", err)
+	}
+	if err := readOnlyDB.View(func(tx *bolt.Tx) error {
+		value := tx.Bucket([]byte("widgets")).Get([]byte("foo"))
+		if !bytes.Equal(value, []byte("bar")) {
+			t.Fatalf("expect value 'bar', got %q", value)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDB_Open_ReadOnly_NoCreate(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "db")
 	_, err := bolt.Open(f, 0600, &bolt.Options{ReadOnly: true})

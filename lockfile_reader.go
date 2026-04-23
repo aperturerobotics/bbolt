@@ -117,3 +117,12 @@ func (lf *LockFile) ClearStaleReaders() int {
 	}
 	return cleared
 }
+
+func (lf *LockFile) hasReaderSlots() bool {
+	for i := 0; i < lf.maxReaders; i++ {
+		if atomic.LoadUint32(lf.slotPidPtr(i)) != 0 {
+			return true
+		}
+	}
+	return false
+}

@@ -1,6 +1,7 @@
 package bbolt
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -204,17 +205,26 @@ func openLockFile(path string, maxReaders int) (*LockFile, error) {
 		maxReaders: maxReaders,
 	}
 
-	// Use CAS on the magic field to safely handle concurrent openers.
-	// Multiple processes/goroutines may race to create/open the lock
-	// file. One will win the CAS(0 -> magic) and initialize the rest
-	// of the header; others will see the magic already set.
+	// Use the magic field as the publish marker for the header. Multiple
+	// processes/goroutines may race to initialize a new lock file, so serialize
+	// the zero-magic path through the writer lock and publish magic last.
 	h := lf.header()
 	magicPtr := (*uint32)(unsafe.Pointer(&lf.data[0]))
-	if atomic.CompareAndSwapUint32(magicPtr, 0, lockFileMagic) {
-		// We won the init race. Write the rest of the header.
-		atomic.StoreUint32(&h.version, lockFileVersion)
-		atomic.StoreUint32(&h.maxReaders, uint32(maxReaders))
-		atomic.StoreUint32(&h.numReaders, 0)
+	if atomic.LoadUint32(magicPtr) == 0 {
+		if err := lf.AcquireWriterLock(); err != nil {
+			lf.Close()
+			return nil, err
+		}
+		if atomic.LoadUint32(magicPtr) == 0 {
+			atomic.StoreUint32(&h.version, lockFileVersion)
+			atomic.StoreUint32(&h.maxReaders, uint32(maxReaders))
+			atomic.StoreUint32(&h.numReaders, 0)
+			atomic.StoreUint32(magicPtr, lockFileMagic)
+		}
+		if err := lf.ReleaseWriterLock(); err != nil {
+			lf.Close()
+			return nil, err
+		}
 	}
 
 	// Validate the header. Read values before any Close could unmap.
@@ -246,6 +256,23 @@ func openLockFile(path string, maxReaders int) (*LockFile, error) {
 	return lf, nil
 }
 
+func openReadOnlyLockFile(path string, maxReaders int) (*LockFile, error) {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("bbolt: stat read-only lock file: %w", err)
+	}
+	lf, err := openLockFile(path, maxReaders)
+	if err == nil {
+		return lf, nil
+	}
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+		return nil, nil
+	}
+	return nil, err
+}
+
 // clearStaleWriterState resets writerCount and accessMode when no live
 // writer process holds the fcntl lock. This recovers from process crashes
 // that left the count elevated without decrementing.
@@ -256,6 +283,10 @@ func openLockFile(path string, maxReaders int) (*LockFile, error) {
 func (lf *LockFile) clearStaleWriterState() {
 	h := lf.header()
 	if atomic.LoadUint32(&h.writerCount) == 0 {
+		return
+	}
+	lf.ClearStaleReaders()
+	if lf.hasReaderSlots() {
 		return
 	}
 	acquired, err := lf.TryAcquireWriterLock()

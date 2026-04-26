@@ -178,6 +178,7 @@ func (tx *Tx) OnCommit(fn func()) {
 func (tx *Tx) Commit() (err error) {
 	txId := tx.ID()
 	lg := tx.db.Logger()
+	var commitPhase bool
 	if lg != discardLogger {
 		lg.Debugf("Committing transaction %d", txId)
 		defer func() {
@@ -193,17 +194,28 @@ func (tx *Tx) Commit() (err error) {
 		if p := recover(); p != nil {
 			switch v := p.(type) {
 			case lockFileChangedPanic:
+				db := tx.db
 				tx.rollback()
+				db.closeIfPathChanged(v.err)
 				err = v.err
 				return
 			case *lockFileChangedPanic:
+				db := tx.db
 				tx.rollback()
+				db.closeIfPathChanged(v.err)
 				err = v.err
 				return
 			}
-			if lockErr := tx.db.validateLockFile(); errors.Is(lockErr, berrors.ErrLockFileChanged) {
+			if lockErr := tx.db.validatePath(); errors.Is(lockErr, berrors.ErrLockFileChanged) {
+				db := tx.db
 				tx.rollback()
+				db.closeIfPathChanged(lockErr)
 				err = lockErr
+				return
+			}
+			if commitPhase {
+				tx.rollback()
+				err = panicked{p}
 				return
 			}
 			panic(p)
@@ -216,13 +228,16 @@ func (tx *Tx) Commit() (err error) {
 	} else if !tx.writable {
 		return berrors.ErrTxNotWritable
 	}
-	if err = tx.db.validateLockFile(); err != nil {
+	if err = tx.db.validatePath(); err != nil {
+		db := tx.db
 		tx.rollback()
+		db.closeIfPathChanged(err)
 		return err
 	}
 	if tx.db.ops.beforeCommitPhase != nil {
 		tx.db.ops.beforeCommitPhase("before-rebalance")
 	}
+	commitPhase = true
 	tx.db.panicIfLockFileChanged()
 
 	// TODO(benbjohnson): Use vectorized I/O to write out dirty pages.

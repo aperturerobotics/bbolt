@@ -171,6 +171,28 @@ func (db *DB) Path() string {
 	return db.path
 }
 
+// ValidatePath returns an error if the database or lock file path no longer
+// refers to the same open file descriptors.
+func (db *DB) ValidatePath() error {
+	if db == nil || db.file == nil {
+		return nil
+	}
+
+	fdInfo, err := db.file.Stat()
+	if err != nil {
+		return fmt.Errorf("bbolt: stat open db file (%s): %w", db.path, err)
+	}
+	pathInfo, err := os.Stat(db.path)
+	if err != nil {
+		return fmt.Errorf("%w: stat db file path (%s): %v", berrors.ErrLockFileChanged, db.path, err)
+	}
+	if !os.SameFile(fdInfo, pathInfo) {
+		return fmt.Errorf("%w: db file path (%s) no longer matches the open database file", berrors.ErrLockFileChanged, db.path)
+	}
+
+	return db.validateLockFile()
+}
+
 // CommitCounter returns the current commit counter from the mmap'd lock file
 // header. The counter is incremented after each successful write transaction
 // commit. Any process with the DB open can read this value via atomic load on
@@ -917,8 +939,21 @@ func (db *DB) validateLockFile() error {
 	return db.lockFile.ValidatePath()
 }
 
+func (db *DB) validatePath() error {
+	return db.ValidatePath()
+}
+
+func (db *DB) closeIfPathChanged(err error) {
+	if db == nil {
+		return
+	}
+	if errors.Is(err, berrors.ErrLockFileChanged) {
+		_ = db.Close()
+	}
+}
+
 func (db *DB) panicIfLockFileChanged() {
-	if err := db.validateLockFile(); err != nil {
+	if err := db.validatePath(); err != nil {
 		panic(lockFileChangedPanic{err: err})
 	}
 }
@@ -993,7 +1028,8 @@ func (db *DB) oldestReadonlyTxid() (common.Txid, bool) {
 }
 
 func (db *DB) beginTx() (*Tx, error) {
-	if err := db.validateLockFile(); err != nil {
+	if err := db.validatePath(); err != nil {
+		db.closeIfPathChanged(err)
 		return nil, err
 	}
 

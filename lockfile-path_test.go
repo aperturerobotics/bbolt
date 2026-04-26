@@ -43,8 +43,26 @@ func TestDBBeginFailsWhenLockFileChanged(t *testing.T) {
 	}
 
 	_, err = db.Begin(true)
+	if !errors.Is(err, berrors.ErrDatabaseNotOpen) {
+		t.Fatalf("Begin(true) error = %v, want %v", err, berrors.ErrDatabaseNotOpen)
+	}
+}
+
+func TestDBBeginClosesWhenDatabaseFileRemoved(t *testing.T) {
+	db := openTestDBWithBucket(t)
+	defer db.Close()
+
+	dbPath := db.Path()
+	if err := os.Remove(dbPath); err != nil {
+		t.Fatalf("remove db file path: %v", err)
+	}
+
+	_, err := db.Begin(false)
 	if !errors.Is(err, berrors.ErrLockFileChanged) {
-		t.Fatalf("Begin(true) error = %v, want %v", err, berrors.ErrLockFileChanged)
+		t.Fatalf("Begin(false) error = %v, want %v", err, berrors.ErrLockFileChanged)
+	}
+	if db.opened {
+		t.Fatal("expected database to close after db file path removal")
 	}
 }
 
@@ -107,6 +125,36 @@ func TestTxCommitFailsWhenLockFileRemovedAfterCommitStarts(t *testing.T) {
 	err = tx.Commit()
 	if !errors.Is(err, berrors.ErrLockFileChanged) {
 		t.Fatalf("Commit() error = %v, want %v", err, berrors.ErrLockFileChanged)
+	}
+}
+
+func TestTxCommitReturnsCommitPhasePanicAsError(t *testing.T) {
+	db := openTestDBWithBucket(t)
+	defer db.Close()
+
+	db.ops.beforeCommitPhase = func(phase string) {
+		if phase != "before-spill" {
+			return
+		}
+		panic("page 2 already freed")
+	}
+
+	tx, err := db.Begin(true)
+	if err != nil {
+		t.Fatalf("Begin(true): %v", err)
+	}
+
+	b := tx.Bucket([]byte("test"))
+	if b == nil {
+		t.Fatal("bucket not found")
+	}
+	if err := b.Put([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	err = tx.Commit()
+	if err == nil || err.Error() != "panic: page 2 already freed" {
+		t.Fatalf("Commit() error = %v, want panic error", err)
 	}
 }
 

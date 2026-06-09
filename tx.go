@@ -195,27 +195,30 @@ func (tx *Tx) Commit() (err error) {
 			switch v := p.(type) {
 			case lockFileChangedPanic:
 				db := tx.db
-				tx.rollback()
+				_ = tx.rollbackSafely()
 				db.closeIfPathChanged(v.err)
 				err = v.err
 				return
 			case *lockFileChangedPanic:
 				db := tx.db
-				tx.rollback()
+				_ = tx.rollbackSafely()
 				db.closeIfPathChanged(v.err)
 				err = v.err
 				return
 			}
 			if lockErr := tx.db.validatePath(); errors.Is(lockErr, berrors.ErrLockFileChanged) {
 				db := tx.db
-				tx.rollback()
+				_ = tx.rollbackSafely()
 				db.closeIfPathChanged(lockErr)
 				err = lockErr
 				return
 			}
 			if commitPhase {
-				tx.rollback()
-				err = panicked{p}
+				if rollbackPanic := tx.rollbackSafely(); rollbackPanic != nil {
+					err = fmt.Errorf("%v; rollback panic: %v", panicked{p}, rollbackPanic)
+				} else {
+					err = panicked{p}
+				}
 				return
 			}
 			panic(p)
@@ -377,7 +380,9 @@ func (tx *Tx) nonPhysicalRollback() {
 		return
 	}
 	if tx.writable {
+		defer tx.close()
 		tx.db.freelist.Rollback(tx.meta.Txid())
+		return
 	}
 	tx.close()
 }
@@ -388,6 +393,7 @@ func (tx *Tx) rollback() {
 		return
 	}
 	if tx.writable {
+		defer tx.close()
 		tx.db.freelist.Rollback(tx.meta.Txid())
 		// When mmap fails, the `data`, `dataref` and `datasz` may be reset to
 		// zero values, and there is no way to reload free page IDs in this case.
@@ -405,8 +411,17 @@ func (tx *Tx) rollback() {
 				tx.db.freelist.Reload(tx.db.page(tx.db.meta().Freelist()))
 			}
 		}
+		return
 	}
 	tx.close()
+}
+
+func (tx *Tx) rollbackSafely() (panicValue any) {
+	defer func() {
+		panicValue = recover()
+	}()
+	tx.rollback()
+	return nil
 }
 
 func (tx *Tx) close() {

@@ -61,6 +61,22 @@ func runChildCommand(cmd string) {
 		childWriteAndHang(dbPath)
 	case "write-and-report-counter":
 		childWriteAndReportCounter(dbPath)
+	case "reader-writer-churn-reader":
+		childReaderWriterChurnReader(dbPath)
+	case "reader-writer-churn-writer":
+		childReaderWriterChurnWriter(dbPath)
+	case "retained-writer":
+		childRetainedWriter(dbPath)
+	case "retained-verifier":
+		childRetainedVerifier(dbPath)
+	case "coordinated-cas-writer":
+		childCoordinatedCASWriter(dbPath)
+	case "coordinated-cas-verifier":
+		childCoordinatedCASVerifier(dbPath)
+	case "hold-coordination-lock":
+		childHoldCoordinationLock(dbPath)
+	case "try-coordination-lock":
+		childTryCoordinationLock(dbPath)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown child command: %s\n", cmd)
 		os.Exit(1)
@@ -1624,4 +1640,563 @@ func TestMultiProcessCommitCounter(t *testing.T) {
 	if counterAfterChild != 4 {
 		t.Fatalf("parent counter after reopen = %d, want 4", counterAfterChild)
 	}
+}
+
+func TestMultiProcessReaderWriterChurn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping multi-process test in short mode")
+	}
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	readyPath := filepath.Join(dir, "reader-ready")
+	donePath := filepath.Join(dir, "writers-done")
+
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists([]byte("churn"))
+		if err != nil {
+			return err
+		}
+		for i := range 128 {
+			if err := b.Put([]byte(fmt.Sprintf("seed-%03d", i)), churnValue(0, i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if closeErr := db.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reader := spawnChild(t, "reader-writer-churn-reader", dbPath,
+		"BBOLT_TEST_SIGNAL_PATH="+readyPath,
+		"BBOLT_TEST_PARENT_DONE_PATH="+donePath,
+	)
+	if err := reader.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForSignal(readyPath, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	writers := []*exec.Cmd{
+		spawnChild(t, "reader-writer-churn-writer", dbPath, "BBOLT_TEST_WRITER_ID=1"),
+		spawnChild(t, "reader-writer-churn-writer", dbPath, "BBOLT_TEST_WRITER_ID=2"),
+	}
+	for _, cmd := range writers {
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, cmd := range writers {
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("writer failed: %v", err)
+		}
+	}
+	if err := os.WriteFile(donePath, []byte("done"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Wait(); err != nil {
+		t.Fatalf("reader failed: %v", err)
+	}
+}
+
+func TestMultiProcessRetainedWriterChurn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping multi-process test in short mode")
+	}
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte("retained"))
+		return err
+	})
+	if closeErr := db.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const writers = 3
+	const iterations = 4
+	var cmds []*exec.Cmd
+	for writerID := range writers {
+		cmds = append(cmds, spawnChild(t, "retained-writer", dbPath,
+			fmt.Sprintf("BBOLT_TEST_WRITER_ID=%d", writerID),
+			fmt.Sprintf("BBOLT_TEST_ITERS=%d", iterations),
+		))
+	}
+	for _, cmd := range cmds {
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("writer failed: %v", err)
+		}
+	}
+
+	verifier := spawnChild(t, "retained-verifier", dbPath,
+		fmt.Sprintf("BBOLT_TEST_WRITERS=%d", writers),
+		fmt.Sprintf("BBOLT_TEST_ITERS=%d", iterations),
+	)
+	if err := verifier.Run(); err != nil {
+		t.Fatalf("verifier failed: %v", err)
+	}
+}
+
+func TestMultiProcessCoordinatedCASWriterChurn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping multi-process test in short mode")
+	}
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		head, err := tx.CreateBucketIfNotExists([]byte("head"))
+		if err != nil {
+			return err
+		}
+		data := make([]byte, 8)
+		binary.BigEndian.PutUint64(data, 0)
+		return head.Put([]byte("seq"), data)
+	})
+	if closeErr := db.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const writers = 3
+	const iterations = 4
+	var cmds []*exec.Cmd
+	for writerID := range writers {
+		cmds = append(cmds, spawnChild(t, "coordinated-cas-writer", dbPath,
+			fmt.Sprintf("BBOLT_TEST_WRITER_ID=%d", writerID),
+			fmt.Sprintf("BBOLT_TEST_ITERS=%d", iterations),
+		))
+	}
+	for _, cmd := range cmds {
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("writer failed: %v", err)
+		}
+	}
+
+	verifier := spawnChild(t, "coordinated-cas-verifier", dbPath,
+		fmt.Sprintf("BBOLT_TEST_WRITERS=%d", writers),
+		fmt.Sprintf("BBOLT_TEST_ITERS=%d", iterations),
+	)
+	if err := verifier.Run(); err != nil {
+		t.Fatalf("verifier failed: %v", err)
+	}
+}
+
+func TestMultiProcessCoordinationLockExcludesOtherProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping multi-process test in short mode")
+	}
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	readyPath := filepath.Join(dir, "coord-ready")
+	donePath := filepath.Join(dir, "coord-done")
+
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	holder := spawnChild(t, "hold-coordination-lock", dbPath,
+		"BBOLT_TEST_SIGNAL_PATH="+readyPath,
+		"BBOLT_TEST_PARENT_DONE_PATH="+donePath,
+	)
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForSignal(readyPath, 5*time.Second); err != nil {
+		_ = holder.Process.Kill()
+		_ = holder.Wait()
+		t.Fatal(err)
+	}
+
+	probe := spawnChild(t, "try-coordination-lock", dbPath)
+	if err := probe.Run(); err == nil {
+		_ = os.WriteFile(donePath, []byte("done"), 0600)
+		_ = holder.Wait()
+		t.Fatal("second process acquired coordination lock while holder was active")
+	}
+
+	if err := os.WriteFile(donePath, []byte("done"), 0600); err != nil {
+		_ = holder.Process.Kill()
+		_ = holder.Wait()
+		t.Fatal(err)
+	}
+	if err := holder.Wait(); err != nil {
+		t.Fatalf("holder failed: %v", err)
+	}
+	if err := spawnChild(t, "try-coordination-lock", dbPath).Run(); err != nil {
+		t.Fatalf("second process could not acquire coordination lock after release: %v", err)
+	}
+}
+
+func childReaderWriterChurnReader(dbPath string) {
+	signalPath := os.Getenv("BBOLT_TEST_SIGNAL_PATH")
+	parentDonePath := os.Getenv("BBOLT_TEST_PARENT_DONE_PATH")
+
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reader open db: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	tx, err := db.Begin(false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reader begin tx: %v\n", err)
+		os.Exit(1)
+	}
+	defer tx.Rollback()
+
+	b := tx.Bucket([]byte("churn"))
+	if b == nil {
+		fmt.Fprintf(os.Stderr, "reader bucket missing\n")
+		os.Exit(1)
+	}
+	if got := b.Get([]byte("seed-000")); len(got) == 0 {
+		fmt.Fprintf(os.Stderr, "reader missing seed\n")
+		os.Exit(1)
+	}
+	if signalPath != "" {
+		if err := os.WriteFile(signalPath, []byte("ready"), 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "reader signal: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	for range 200 {
+		for i := range 128 {
+			_ = b.Get([]byte(fmt.Sprintf("seed-%03d", i)))
+		}
+		if parentDonePath != "" {
+			if _, err := os.Stat(parentDonePath); err == nil {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func childReaderWriterChurnWriter(dbPath string) {
+	writerID, _ := strconv.Atoi(os.Getenv("BBOLT_TEST_WRITER_ID"))
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 10 * time.Second})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "writer open db: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	for iter := range 80 {
+		err := db.Update(func(tx *bolt.Tx) error {
+			b, err := tx.CreateBucketIfNotExists([]byte("churn"))
+			if err != nil {
+				return err
+			}
+			for i := range 64 {
+				key := []byte(fmt.Sprintf("writer-%d-%03d-%03d", writerID, iter, i))
+				if err := b.Put(key, churnValue(iter, i)); err != nil {
+					return err
+				}
+				if iter > 2 {
+					_ = b.Delete([]byte(fmt.Sprintf("writer-%d-%03d-%03d", writerID, iter-3, i)))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "writer update: %v\n", err)
+			os.Exit(1)
+		}
+	}
+}
+
+func childRetainedWriter(dbPath string) {
+	writerID, _ := strconv.Atoi(os.Getenv("BBOLT_TEST_WRITER_ID"))
+	iterations, _ := strconv.Atoi(os.Getenv("BBOLT_TEST_ITERS"))
+	if iterations == 0 {
+		iterations = 4
+	}
+
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 10 * time.Second})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "retained writer open db: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	for iter := range iterations {
+		err := db.Update(func(tx *bolt.Tx) error {
+			b, err := tx.CreateBucketIfNotExists([]byte("retained"))
+			if err != nil {
+				return err
+			}
+			key := []byte(fmt.Sprintf("writer-%d-%03d", writerID, iter))
+			return b.Put(key, churnValue(iter, writerID))
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "retained writer update: %v\n", err)
+			os.Exit(1)
+		}
+	}
+}
+
+func childRetainedVerifier(dbPath string) {
+	writers, _ := strconv.Atoi(os.Getenv("BBOLT_TEST_WRITERS"))
+	iterations, _ := strconv.Atoi(os.Getenv("BBOLT_TEST_ITERS"))
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 10 * time.Second})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "retained verifier open db: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	err = db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("retained"))
+		if b == nil {
+			return fmt.Errorf("retained bucket missing")
+		}
+		var missing []string
+		for writerID := range writers {
+			for iter := range iterations {
+				key := fmt.Sprintf("writer-%d-%03d", writerID, iter)
+				if b.Get([]byte(key)) == nil {
+					missing = append(missing, key)
+				}
+			}
+		}
+		if len(missing) != 0 {
+			return fmt.Errorf("missing retained keys: %s", strings.Join(missing, ","))
+		}
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "retained verifier: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func childCoordinatedCASWriter(dbPath string) {
+	writerID, _ := strconv.Atoi(os.Getenv("BBOLT_TEST_WRITER_ID"))
+	iterations, _ := strconv.Atoi(os.Getenv("BBOLT_TEST_ITERS"))
+	if iterations == 0 {
+		iterations = 4
+	}
+
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 10 * time.Second})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "coordinated cas writer open db: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	for iter := range iterations {
+		if err := coordinatedCASWrite(db, writerID, iter); err != nil {
+			fmt.Fprintf(os.Stderr, "coordinated cas writer update: %v\n", err)
+			os.Exit(1)
+		}
+	}
+}
+
+func coordinatedCASWrite(db *bolt.DB, writerID, iter int) error {
+	for attempt := range 200 {
+		ok, err := db.TryAcquireCoordinationLock()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			time.Sleep(min(time.Duration(attempt+1)*5*time.Millisecond, 25*time.Millisecond))
+			continue
+		}
+		err = coordinatedCASWriteLocked(db, writerID, iter)
+		releaseErr := db.ReleaseCoordinationLock()
+		if err != nil {
+			return err
+		}
+		return releaseErr
+	}
+	return fmt.Errorf("coordination lock busy after retries")
+}
+
+func coordinatedCASWriteLocked(db *bolt.DB, writerID, iter int) error {
+	if err := db.RefreshForCoordinationLock(); err != nil {
+		return err
+	}
+	var base uint64
+	if err := db.View(func(tx *bolt.Tx) error {
+		head := tx.Bucket([]byte("head"))
+		if head == nil {
+			return fmt.Errorf("head bucket missing")
+		}
+		base = binary.BigEndian.Uint64(head.Get([]byte("seq")))
+		return nil
+	}); err != nil {
+		return err
+	}
+	return db.Update(func(tx *bolt.Tx) error {
+		head := tx.Bucket([]byte("head"))
+		if head == nil {
+			return fmt.Errorf("head bucket missing")
+		}
+		current := binary.BigEndian.Uint64(head.Get([]byte("seq")))
+		if current != base {
+			return fmt.Errorf("stale head: current=%d base=%d", current, base)
+		}
+		retained, err := tx.CreateBucketIfNotExists([]byte("coordinated-cas"))
+		if err != nil {
+			return err
+		}
+		key := []byte(fmt.Sprintf("writer-%d-%03d", writerID, iter))
+		if err := retained.Put(key, churnValue(iter, writerID)); err != nil {
+			return err
+		}
+		data := make([]byte, 8)
+		binary.BigEndian.PutUint64(data, base+1)
+		return head.Put([]byte("seq"), data)
+	})
+}
+
+func childCoordinatedCASVerifier(dbPath string) {
+	writers, _ := strconv.Atoi(os.Getenv("BBOLT_TEST_WRITERS"))
+	iterations, _ := strconv.Atoi(os.Getenv("BBOLT_TEST_ITERS"))
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 10 * time.Second})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "coordinated cas verifier open db: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	err = db.View(func(tx *bolt.Tx) error {
+		head := tx.Bucket([]byte("head"))
+		if head == nil {
+			return fmt.Errorf("head bucket missing")
+		}
+		seq := binary.BigEndian.Uint64(head.Get([]byte("seq")))
+		wantSeq := uint64(writers * iterations)
+		retained := tx.Bucket([]byte("coordinated-cas"))
+		if retained == nil {
+			return fmt.Errorf("coordinated-cas bucket missing")
+		}
+		var missing []string
+		for writerID := range writers {
+			for iter := range iterations {
+				key := fmt.Sprintf("writer-%d-%03d", writerID, iter)
+				if retained.Get([]byte(key)) == nil {
+					missing = append(missing, key)
+				}
+			}
+		}
+		if seq != wantSeq || len(missing) != 0 {
+			return fmt.Errorf("seq=%d want=%d missing=%s", seq, wantSeq, strings.Join(missing, ","))
+		}
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "coordinated cas verifier: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func childHoldCoordinationLock(dbPath string) {
+	signalPath := os.Getenv("BBOLT_TEST_SIGNAL_PATH")
+	parentDonePath := os.Getenv("BBOLT_TEST_PARENT_DONE_PATH")
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 10 * time.Second})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "coord holder open db: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	ok, err := db.TryAcquireCoordinationLock()
+	if err != nil || !ok {
+		fmt.Fprintf(os.Stderr, "coord holder acquire: ok=%v err=%v\n", ok, err)
+		os.Exit(1)
+	}
+	defer db.ReleaseCoordinationLock()
+	if err := db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists([]byte("coord"))
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte("held"), []byte("1"))
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "coord holder write while held: %v\n", err)
+		os.Exit(1)
+	}
+	if signalPath != "" {
+		if err := os.WriteFile(signalPath, []byte("ready"), 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "coord holder signal: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	for {
+		if parentDonePath != "" {
+			if _, err := os.Stat(parentDonePath); err == nil {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func childTryCoordinationLock(dbPath string) {
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 10 * time.Second})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "coord probe open db: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	ok, err := db.TryAcquireCoordinationLock()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "coord probe acquire: %v\n", err)
+		os.Exit(1)
+	}
+	if !ok {
+		fmt.Fprintf(os.Stderr, "coord probe busy\n")
+		os.Exit(2)
+	}
+	defer db.ReleaseCoordinationLock()
+}
+
+func churnValue(iter, i int) []byte {
+	value := make([]byte, 4096)
+	for idx := range value {
+		value[idx] = byte(iter + i + idx)
+	}
+	return value
 }

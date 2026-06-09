@@ -939,6 +939,127 @@ func (db *DB) validateLockFile() error {
 	return db.lockFile.ValidatePath()
 }
 
+// TryAcquireCoordinationLock attempts to acquire an application-level
+// cross-process lock tied to this database's lock file. The lock is independent
+// from bbolt's per-transaction writer lock and must be released with
+// ReleaseCoordinationLock.
+func (db *DB) TryAcquireCoordinationLock() (bool, error) {
+	if db == nil {
+		return false, berrors.ErrDatabaseNotOpen
+	}
+	if db.readOnly {
+		return false, berrors.ErrDatabaseReadOnly
+	}
+
+	db.metalock.Lock()
+	defer db.metalock.Unlock()
+
+	if !db.opened {
+		return false, berrors.ErrDatabaseNotOpen
+	}
+	if db.lockFile == nil {
+		return true, nil
+	}
+	if err := db.lockFile.ValidatePath(); err != nil {
+		return false, err
+	}
+	acquired, err := db.lockFile.TryAcquireCoordinationLock()
+	if err != nil || !acquired {
+		return acquired, err
+	}
+	if err := db.lockFile.ValidatePath(); err != nil {
+		_ = db.lockFile.ReleaseCoordinationLock()
+		return false, err
+	}
+	return true, nil
+}
+
+// ReleaseCoordinationLock releases a lock acquired by TryAcquireCoordinationLock.
+func (db *DB) ReleaseCoordinationLock() error {
+	if db == nil {
+		return berrors.ErrDatabaseNotOpen
+	}
+
+	db.metalock.Lock()
+	defer db.metalock.Unlock()
+
+	if !db.opened {
+		return berrors.ErrDatabaseNotOpen
+	}
+	if db.lockFile == nil {
+		return nil
+	}
+	return db.lockFile.ReleaseCoordinationLock()
+}
+
+// RefreshForCoordinationLock refreshes this handle after acquiring an external
+// application-level coordination lock. Callers that build higher-level mutable
+// state before opening bbolt write transactions need this boundary so their
+// cursors start from the latest cross-process freelist and mmap view.
+func (db *DB) RefreshForCoordinationLock() error {
+	if db == nil {
+		return berrors.ErrDatabaseNotOpen
+	}
+	if db.readOnly {
+		return berrors.ErrDatabaseReadOnly
+	}
+
+	db.checkEscalation()
+	db.rwlock.Lock()
+	defer db.rwlock.Unlock()
+
+	if db.lockFile != nil {
+		if err := db.lockFile.AcquireWriterLock(); err != nil {
+			return err
+		}
+		defer func() {
+			_ = db.lockFile.ReleaseWriterLock()
+		}()
+		if err := db.validateLockFile(); err != nil {
+			return err
+		}
+	}
+
+	db.metalock.Lock()
+	defer db.metalock.Unlock()
+
+	if !db.opened {
+		return berrors.ErrDatabaseNotOpen
+	}
+	if db.data == nil {
+		return berrors.ErrInvalidMapping
+	}
+	if db.lockFile != nil {
+		if err := db.remapForCoordinationLock(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// remapForCoordinationLock forces this handle to observe the latest on-disk
+// meta pages and freelist after another process may have committed. It is used
+// at higher-level coordination boundaries that build mutable state before the
+// first short bbolt write transaction.
+func (db *DB) remapForCoordinationLock() error {
+	if !db.hasSyncedFreelist() {
+		return errors.New("bbolt: NoFreelistSync is not compatible with multi-process concurrent access; disable NoFreelistSync or use single-process mode")
+	}
+	if err := db.mmap(0); err != nil {
+		return fmt.Errorf("bbolt: remap for coordination refresh: %w", err)
+	}
+	meta := db.meta()
+	db.freelist = newFreelist(db.FreelistType)
+	db.freelist.Read(db.page(meta.Freelist()))
+	db.restoreReadonlyTxidsToFreelist()
+	db.deferReloadedFreePagesForActiveReaders(meta.Txid())
+	if db.stats != nil {
+		db.stats.FreePageN = db.freelist.FreeCount()
+	}
+	db.lastKnownTxid = uint64(meta.Txid())
+	return nil
+}
+
 func (db *DB) validatePath() error {
 	return db.ValidatePath()
 }
@@ -1199,7 +1320,7 @@ func (db *DB) beginRWTx() (*Tx, error) {
 //
 // Single-process mode skips refreshForWriter and the beginTx remap check
 // (no external writer to cause file growth or commit changes). All other
-// coordination (per-tx fcntl writer lock, reader table, OldestReaderTxid)
+// coordination (per-tx fcntl locks, reader table ops, and refreshForWriter)
 // is always performed for correctness.
 //
 // Must be called during db.Open() before any transactions.
@@ -1226,9 +1347,9 @@ func (db *DB) exitAccessMode() {
 	}
 }
 
-// checkEscalation checks whether another writer-capable process has
-// opened the DB and needs this process to transition from single-process
-// fast path to full multi-process coordination.
+// checkEscalation checks whether another writer-capable process has opened the
+// DB and needs this process to transition from single-process fast path to full
+// multi-process coordination.
 //
 // Cost: one atomic load (~1ns) when in single-process mode.
 func (db *DB) checkEscalation() {
@@ -1310,10 +1431,33 @@ func (db *DB) refreshForWriter() error {
 	db.freelist = newFreelist(db.FreelistType)
 	db.freelist.Read(db.page(meta.Freelist()))
 	db.restoreReadonlyTxidsToFreelist()
+	db.deferReloadedFreePagesForActiveReaders(meta.Txid())
 	if db.stats != nil {
 		db.stats.FreePageN = db.freelist.FreeCount()
 	}
 	return nil
+}
+
+func (db *DB) deferReloadedFreePagesForActiveReaders(metaTxid common.Txid) {
+	if db.freelist == nil {
+		return
+	}
+
+	oldest := metaTxid
+	if localOldest, ok := db.oldestReadonlyTxid(); ok && localOldest < oldest {
+		oldest = localOldest
+	}
+	if db.lockFile != nil {
+		crossProcessOldest := common.Txid(db.lockFile.OldestReaderTxid(uint64(metaTxid)))
+		if crossProcessOldest < oldest {
+			oldest = crossProcessOldest
+		}
+	}
+	if oldest >= metaTxid {
+		return
+	}
+
+	db.freelist.DeferFreePages(metaTxid)
 }
 
 // removeTx removes a transaction from the database.

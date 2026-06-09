@@ -172,6 +172,22 @@ func (t *shared) ReleasePendingPages() {
 	// Any page both allocated and freed in an extent is safe to release.
 }
 
+func (t *shared) DeferFreePages(txid common.Txid) {
+	ids := append(common.Pgids(nil), t.freePageIds()...)
+	if len(ids) == 0 {
+		return
+	}
+	txp := t.pending[txid]
+	if txp == nil {
+		txp = &txPending{}
+		t.pending[txid] = txp
+	}
+	txp.ids = append(txp.ids, ids...)
+	txp.alloctx = append(txp.alloctx, make([]common.Txid, len(ids))...)
+	t.Init(nil)
+	t.reindex()
+}
+
 func (t *shared) release(txid common.Txid) {
 	m := make(common.Pgids, 0)
 	for tid, txp := range t.pending {

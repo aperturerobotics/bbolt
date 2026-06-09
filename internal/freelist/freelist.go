@@ -45,6 +45,11 @@ type Interface interface {
 	// ReleasePendingPages releases any pages associated with closed read-only transactions.
 	ReleasePendingPages()
 
+	// DeferFreePages moves currently free pages back to pending under txid.
+	// The pages remain serialized by Write but are not allocatable until the
+	// normal readonly transaction release rules make txid safe to reclaim.
+	DeferFreePages(txid common.Txid)
+
 	// Free releases a page and its overflow for a given transaction id.
 	// If the page is already free or is one of the meta pages, then a panic will occur.
 	Free(txId common.Txid, p *common.Page)

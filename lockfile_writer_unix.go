@@ -72,3 +72,76 @@ func (lf *LockFile) ReleaseWriterLock() error {
 		// EINTR: retry the syscall.
 	}
 }
+
+// AcquireCoordinationLock acquires the cross-process coordination lock.
+func (lf *LockFile) AcquireCoordinationLock() error {
+	fd := lf.fd
+	if lf.coordFd != nil {
+		fd = lf.coordFd
+	}
+	lock := syscall.Flock_t{
+		Type:   syscall.F_WRLCK,
+		Whence: int16(io.SeekStart),
+		Start:  0,
+		Len:    coordinationLockRegionSize,
+	}
+	for {
+		err := syscall.FcntlFlock(fd.Fd(), syscall.F_SETLKW, &lock)
+		if err == nil {
+			return nil
+		}
+		if err != syscall.EINTR {
+			return writerLockError("acquire coordination", err)
+		}
+	}
+}
+
+// TryAcquireCoordinationLock attempts to acquire the coordination lock without blocking.
+func (lf *LockFile) TryAcquireCoordinationLock() (bool, error) {
+	fd := lf.fd
+	if lf.coordFd != nil {
+		fd = lf.coordFd
+	}
+	lock := syscall.Flock_t{
+		Type:   syscall.F_WRLCK,
+		Whence: int16(io.SeekStart),
+		Start:  0,
+		Len:    coordinationLockRegionSize,
+	}
+	for {
+		err := syscall.FcntlFlock(fd.Fd(), syscall.F_SETLK, &lock)
+		if err == nil {
+			return true, nil
+		}
+		if err == syscall.EINTR {
+			continue
+		}
+		if err == syscall.EAGAIN || err == syscall.EACCES {
+			return false, nil
+		}
+		return false, writerLockError("try acquire coordination", err)
+	}
+}
+
+// ReleaseCoordinationLock releases the cross-process coordination lock.
+func (lf *LockFile) ReleaseCoordinationLock() error {
+	fd := lf.fd
+	if lf.coordFd != nil {
+		fd = lf.coordFd
+	}
+	lock := syscall.Flock_t{
+		Type:   syscall.F_UNLCK,
+		Whence: int16(io.SeekStart),
+		Start:  0,
+		Len:    coordinationLockRegionSize,
+	}
+	for {
+		err := syscall.FcntlFlock(fd.Fd(), syscall.F_SETLK, &lock)
+		if err == nil {
+			return nil
+		}
+		if err != syscall.EINTR {
+			return writerLockError("release coordination", err)
+		}
+	}
+}

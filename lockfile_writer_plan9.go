@@ -19,3 +19,18 @@ func (lf *LockFile) TryAcquireWriterLock() (bool, error) {
 func (lf *LockFile) ReleaseWriterLock() error {
 	return nil
 }
+
+// AcquireCoordinationLock is a no-op on Plan 9.
+func (lf *LockFile) AcquireCoordinationLock() error {
+	return nil
+}
+
+// TryAcquireCoordinationLock always succeeds on Plan 9.
+func (lf *LockFile) TryAcquireCoordinationLock() (bool, error) {
+	return true, nil
+}
+
+// ReleaseCoordinationLock is a no-op on Plan 9.
+func (lf *LockFile) ReleaseCoordinationLock() error {
+	return nil
+}

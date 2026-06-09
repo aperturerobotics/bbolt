@@ -64,3 +64,65 @@ func (lf *LockFile) ReleaseWriterLock() error {
 	}
 	return nil
 }
+
+// AcquireCoordinationLock acquires the cross-process coordination lock.
+func (lf *LockFile) AcquireCoordinationLock() error {
+	fd := lf.fd
+	if lf.coordFd != nil {
+		fd = lf.coordFd
+	}
+	err := windows.LockFileEx(
+		windows.Handle(fd.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK,
+		0,
+		coordinationLockRegionSize,
+		0,
+		&windows.Overlapped{},
+	)
+	if err != nil {
+		return writerLockError("acquire coordination", err)
+	}
+	return nil
+}
+
+// TryAcquireCoordinationLock attempts to acquire the coordination lock without blocking.
+func (lf *LockFile) TryAcquireCoordinationLock() (bool, error) {
+	fd := lf.fd
+	if lf.coordFd != nil {
+		fd = lf.coordFd
+	}
+	err := windows.LockFileEx(
+		windows.Handle(fd.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0,
+		coordinationLockRegionSize,
+		0,
+		&windows.Overlapped{},
+	)
+	if err == nil {
+		return true, nil
+	}
+	if err == windows.ERROR_LOCK_VIOLATION {
+		return false, nil
+	}
+	return false, writerLockError("try acquire coordination", err)
+}
+
+// ReleaseCoordinationLock releases the cross-process coordination lock.
+func (lf *LockFile) ReleaseCoordinationLock() error {
+	fd := lf.fd
+	if lf.coordFd != nil {
+		fd = lf.coordFd
+	}
+	err := windows.UnlockFileEx(
+		windows.Handle(fd.Fd()),
+		0,
+		coordinationLockRegionSize,
+		0,
+		&windows.Overlapped{},
+	)
+	if err != nil {
+		return writerLockError("release coordination", err)
+	}
+	return nil
+}

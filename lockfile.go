@@ -54,6 +54,9 @@ const (
 	// writerLockRegionSize is the size of the writer lock region in bytes.
 	writerLockRegionSize = 64
 
+	// coordinationLockRegionSize is the size of the coordination lock region.
+	coordinationLockRegionSize = 64
+
 	// readerTableOffset is the byte offset where the reader table begins.
 	readerTableOffset = 128
 
@@ -114,6 +117,7 @@ func lockFileSize(maxReaders int) int {
 // on the mapped bytes are visible across processes.
 type LockFile struct {
 	fd         *os.File
+	coordFd    *os.File
 	data       []byte
 	path       string
 	maxReaders int
@@ -175,10 +179,16 @@ func openLockFile(path string, maxReaders int) (*LockFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bbolt: open lock file: %w", err)
 	}
+	coordF, err := os.OpenFile(path+"-coord", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("bbolt: open coordination lock file: %w", err)
+	}
 
 	// Check current file size to determine if the file is new.
 	info, err := f.Stat()
 	if err != nil {
+		coordF.Close()
 		f.Close()
 		return nil, fmt.Errorf("bbolt: stat lock file: %w", err)
 	}
@@ -186,6 +196,7 @@ func openLockFile(path string, maxReaders int) (*LockFile, error) {
 	// Grow the file if it's too small.
 	if info.Size() < int64(sz) {
 		if err := f.Truncate(int64(sz)); err != nil {
+			coordF.Close()
 			f.Close()
 			return nil, fmt.Errorf("bbolt: truncate lock file: %w", err)
 		}
@@ -194,12 +205,14 @@ func openLockFile(path string, maxReaders int) (*LockFile, error) {
 	// mmap the file with MAP_SHARED + PROT_READ|PROT_WRITE.
 	data, err := mmapLockFile(f, sz)
 	if err != nil {
+		coordF.Close()
 		f.Close()
 		return nil, fmt.Errorf("bbolt: mmap lock file: %w", err)
 	}
 
 	lf := &LockFile{
 		fd:         f,
+		coordFd:    coordF,
 		data:       data,
 		path:       path,
 		maxReaders: maxReaders,
@@ -398,6 +411,12 @@ func (lf *LockFile) Close() error {
 			errs = append(errs, fmt.Errorf("bbolt: close lock file: %w", err))
 		}
 		lf.fd = nil
+	}
+	if lf.coordFd != nil {
+		if err := lf.coordFd.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("bbolt: close coordination lock file: %w", err))
+		}
+		lf.coordFd = nil
 	}
 
 	if len(errs) > 0 {

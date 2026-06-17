@@ -136,7 +136,12 @@ type DB struct {
 	rwtx     *Tx
 	stats    *Stats
 
-	lockFile      *LockFile
+	lockFile *LockFile
+	// lockFileMu guards the lockFile pointer lifetime so CommitCounter and
+	// WaitCommitCounter cannot dereference the lock-file mmap while close()
+	// munmaps it and nils the pointer. close() holds it across the lock-file
+	// teardown; the counter readers hold it per atomic load only.
+	lockFileMu    sync.Mutex
 	readerSlot    int    // index of this DB instance's reader slot in the lock file
 	lastKnownTxid uint64 // last meta txid seen by this process (for detecting external commits)
 	singleProcess bool   // true when this is the sole writer-capable opener (fast path)
@@ -199,6 +204,8 @@ func (db *DB) ValidatePath() error {
 // shared memory (zero syscall cost). Returns 0 if no lock file is present
 // (e.g. in-memory database).
 func (db *DB) CommitCounter() uint64 {
+	db.lockFileMu.Lock()
+	defer db.lockFileMu.Unlock()
 	if db.lockFile == nil {
 		return 0
 	}
@@ -216,12 +223,16 @@ func (db *DB) WaitCommitCounter(ctx context.Context, lastSeen uint64) (uint64, e
 		return current, nil
 	}
 
-	// Try fsnotify on the lock file.
-	if db.lockFile != nil {
+	// Try fsnotify on the lock file. Snapshot the pointer under lockFileMu so a
+	// concurrent close() cannot nil it between the check and the Path() read.
+	db.lockFileMu.Lock()
+	lf := db.lockFile
+	db.lockFileMu.Unlock()
+	if lf != nil {
 		watcher, err := fsnotify.NewWatcher()
 		if err == nil {
 			defer watcher.Close()
-			if err := watcher.Add(db.lockFile.Path()); err == nil {
+			if err := watcher.Add(lf.Path()); err == nil {
 				return db.waitCommitCounterFsnotify(ctx, lastSeen, watcher)
 			}
 		}
@@ -859,7 +870,11 @@ func (db *DB) close() error {
 	// Unregister as writer-capable opener (releases persistent lock if held).
 	db.exitAccessMode()
 
-	// Release reader slot and close the lock file.
+	// Release reader slot and close the lock file. Hold lockFileMu across the
+	// munmap and nil so an in-flight CommitCounter reader either completes its
+	// atomic load on the live mapping or observes a nil lockFile, never a freed
+	// mapping (was SIGSEGV in WaitCommitCounter during DB close).
+	db.lockFileMu.Lock()
 	if db.lockFile != nil {
 		db.lockFile.ReleaseReaderSlot(db.readerSlot)
 		if err := db.lockFile.Close(); err != nil {
@@ -867,6 +882,7 @@ func (db *DB) close() error {
 		}
 		db.lockFile = nil
 	}
+	db.lockFileMu.Unlock()
 
 	// Close file handles.
 	if db.file != nil {

@@ -1378,8 +1378,17 @@ func (db *DB) checkEscalation() {
 	}
 	// Another process has opened. Escalate to multi-process mode.
 	db.lockFile.SetAccessMode(accessModeMulti)
-	db.lastKnownTxid = uint64(db.meta().Txid())
 	db.singleProcess = false
+	// The in-memory freelist was loaded while single-process. Force the next
+	// writer refresh to reload it; setting lastKnownTxid to the current meta
+	// txid would make refreshForWriter skip reload even though other processes
+	// may already have committed.
+	current := uint64(db.meta().Txid())
+	if current == 0 {
+		db.lastKnownTxid = 0
+	} else {
+		db.lastKnownTxid = current - 1
+	}
 }
 
 // refreshForWriter refreshes the in-memory database state after

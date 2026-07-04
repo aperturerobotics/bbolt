@@ -828,8 +828,9 @@ func TestDB_Concurrent_WriteTo_and_ConsistentRead(t *testing.T) {
 }
 
 // TestDB_WriteTo_and_Overwrite verifies that `(tx *Tx) WriteTo` can still
-// work even the underlying file is overwritten between the time a read-only
-// transaction is created and the time the file is actually opened
+// copy from the already-open database file descriptor when the path is
+// replaced between read-transaction creation and WriteTo, while new
+// transactions fail closed once ValidatePath detects the path mismatch.
 func TestDB_WriteTo_and_Overwrite(t *testing.T) {
 	testCases := []struct {
 		name      string
@@ -931,6 +932,15 @@ func TestDB_WriteTo_and_Overwrite(t *testing.T) {
 			t.Log("Compare the dataExpected and dataActual")
 			same := reflect.DeepEqual(dataExpected, dataActual)
 			require.True(t, same, fmt.Sprintf("found inconsistent data, dataExpected: %v, ddataActual : %v", dataExpected, dataActual))
+
+			if runtime.GOOS == "linux" {
+				_, err := db.Begin(false)
+				require.Error(t, err)
+				require.True(t, errors.Is(err, berrors.ErrLockFileChanged),
+					"Begin(false) error = %v, want %v", err, berrors.ErrLockFileChanged)
+				// Path no longer matches the open fd; skip PostTestCleanup MustCheck.
+				db.MustClose()
+			}
 		})
 	}
 }

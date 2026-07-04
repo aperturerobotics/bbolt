@@ -447,6 +447,97 @@ func TestDBAdaptiveCheckEscalationWriteTx(t *testing.T) {
 	}
 }
 
+func TestDBAdaptiveEscalationPreservesLocalFreelistTxid(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db1, err := Open(dbPath, 0600, nil)
+	if err != nil {
+		t.Fatalf("Open db1: %v", err)
+	}
+	defer db1.Close()
+
+	if err := db1.Update(func(tx *Tx) error {
+		b, err := tx.CreateBucket([]byte("test"))
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte("k"), []byte("v1"))
+	}); err != nil {
+		t.Fatalf("initial Update: %v", err)
+	}
+	if got, want := db1.lastKnownTxid, uint64(db1.meta().Txid()); got != want {
+		t.Fatalf("lastKnownTxid after single-process commit = %d, want %d", got, want)
+	}
+
+	db2, err := Open(dbPath, 0600, &Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("Open db2: %v", err)
+	}
+	defer db2.Close()
+
+	before := db1.lastKnownTxid
+	db1.checkEscalation()
+	if db1.singleProcess {
+		t.Fatal("expected db1 to escalate")
+	}
+	if got := db1.lastKnownTxid; got != before {
+		t.Fatalf("checkEscalation rewound lastKnownTxid to %d, want %d", got, before)
+	}
+
+	if err := db1.Update(func(tx *Tx) error {
+		return tx.Bucket([]byte("test")).Put([]byte("k"), []byte("v2"))
+	}); err != nil {
+		t.Fatalf("Update after escalation: %v", err)
+	}
+	if got, want := db1.lastKnownTxid, uint64(db1.meta().Txid()); got != want {
+		t.Fatalf("lastKnownTxid after escalated commit = %d, want %d", got, want)
+	}
+}
+
+func TestDBAdaptiveEscalationRefreshesExternalCommit(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db1, err := Open(dbPath, 0600, nil)
+	if err != nil {
+		t.Fatalf("Open db1: %v", err)
+	}
+	defer db1.Close()
+
+	if err := db1.Update(func(tx *Tx) error {
+		b, err := tx.CreateBucket([]byte("test"))
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte("k"), []byte("db1"))
+	}); err != nil {
+		t.Fatalf("initial Update: %v", err)
+	}
+
+	db2, err := Open(dbPath, 0600, &Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("Open db2: %v", err)
+	}
+	defer db2.Close()
+
+	if err := db2.Update(func(tx *Tx) error {
+		return tx.Bucket([]byte("test")).Put([]byte("k"), []byte("db2"))
+	}); err != nil {
+		t.Fatalf("db2 Update: %v", err)
+	}
+
+	if err := db1.Update(func(tx *Tx) error {
+		got := tx.Bucket([]byte("test")).Get([]byte("k"))
+		if string(got) != "db2" {
+			return fmt.Errorf("db1 refreshed value = %q, want %q", got, "db2")
+		}
+		return tx.Bucket([]byte("test")).Put([]byte("k"), []byte("db1-after-refresh"))
+	}); err != nil {
+		t.Fatalf("db1 Update after external commit: %v", err)
+	}
+}
+
 // TestDBAdaptiveEscalationMidTransaction verifies that checkEscalation
 // at tx.close() detects escalation that occurred while a transaction
 // was in flight.

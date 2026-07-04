@@ -1662,7 +1662,7 @@ func TestMultiProcessReaderWriterChurn(t *testing.T) {
 			return err
 		}
 		for i := range 128 {
-			if err := b.Put([]byte(fmt.Sprintf("seed-%03d", i)), churnValue(0, i)); err != nil {
+			if err := b.Put(fmt.Appendf(nil, "seed-%03d", i), churnValue(0, i)); err != nil {
 				return err
 			}
 		}
@@ -1903,7 +1903,7 @@ func childReaderWriterChurnReader(dbPath string) {
 	}
 	for range 200 {
 		for i := range 128 {
-			_ = b.Get([]byte(fmt.Sprintf("seed-%03d", i)))
+			_ = b.Get(fmt.Appendf(nil, "seed-%03d", i))
 		}
 		if parentDonePath != "" {
 			if _, err := os.Stat(parentDonePath); err == nil {
@@ -1930,12 +1930,12 @@ func childReaderWriterChurnWriter(dbPath string) {
 				return err
 			}
 			for i := range 64 {
-				key := []byte(fmt.Sprintf("writer-%d-%03d-%03d", writerID, iter, i))
+				key := fmt.Appendf(nil, "writer-%d-%03d-%03d", writerID, iter, i)
 				if err := b.Put(key, churnValue(iter, i)); err != nil {
 					return err
 				}
 				if iter > 2 {
-					_ = b.Delete([]byte(fmt.Sprintf("writer-%d-%03d-%03d", writerID, iter-3, i)))
+					_ = b.Delete(fmt.Appendf(nil, "writer-%d-%03d-%03d", writerID, iter-3, i))
 				}
 			}
 			return nil
@@ -1967,7 +1967,7 @@ func childRetainedWriter(dbPath string) {
 			if err != nil {
 				return err
 			}
-			key := []byte(fmt.Sprintf("writer-%d-%03d", writerID, iter))
+			key := fmt.Appendf(nil, "writer-%d-%03d", writerID, iter)
 			return b.Put(key, churnValue(iter, writerID))
 		})
 		if err != nil {
@@ -2082,7 +2082,7 @@ func coordinatedCASWriteLocked(db *bolt.DB, writerID, iter int) error {
 		if err != nil {
 			return err
 		}
-		key := []byte(fmt.Sprintf("writer-%d-%03d", writerID, iter))
+		key := fmt.Appendf(nil, "writer-%d-%03d", writerID, iter)
 		if err := retained.Put(key, churnValue(iter, writerID)); err != nil {
 			return err
 		}

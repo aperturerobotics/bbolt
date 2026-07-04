@@ -329,6 +329,7 @@ func (tx *Tx) Commit() (err error) {
 		tx.rollback()
 		return err
 	}
+	tx.db.lastKnownTxid = uint64(tx.meta.Txid())
 	tx.stats.IncWriteTime(time.Since(startTime))
 
 	// Increment the commit counter so cross-process observers can detect

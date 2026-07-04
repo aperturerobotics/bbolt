@@ -456,9 +456,11 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 		db.loadFreelist()
 	}
 
-	// Record the current meta txid so refreshForWriter can detect
-	// external commits (from other processes). Only needed in multi-process mode.
-	if !db.singleProcess && db.lockFile != nil {
+	// Track the txid represented by the loaded freelist. Single-process
+	// handles update this on every successful commit so escalation can
+	// distinguish local commits already reflected in memory from later
+	// commits made by another process.
+	if db.lockFile != nil {
 		db.lastKnownTxid = uint64(db.meta().Txid())
 	}
 
@@ -1304,13 +1306,6 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	t.init(db)
 	db.rwtx = t
 
-	// Track the txid this write transaction will commit, so the next
-	// beginRWTx can detect if another process committed in between.
-	// Skip in single-process mode (no external commits to detect).
-	if !db.singleProcess && db.lockFile != nil {
-		db.lastKnownTxid = uint64(t.meta.Txid())
-	}
-
 	// Query the cross-process oldest reader txid from the lock file.
 	// Add it as a synthetic readonly TXID so the freelist won't reclaim
 	// pages still being read by readers in other processes.
@@ -1379,16 +1374,11 @@ func (db *DB) checkEscalation() {
 	// Another process has opened. Escalate to multi-process mode.
 	db.lockFile.SetAccessMode(accessModeMulti)
 	db.singleProcess = false
-	// The in-memory freelist was loaded while single-process. Force the next
-	// writer refresh to reload it; setting lastKnownTxid to the current meta
-	// txid would make refreshForWriter skip reload even though other processes
-	// may already have committed.
-	current := uint64(db.meta().Txid())
-	if current == 0 {
-		db.lastKnownTxid = 0
-	} else {
-		db.lastKnownTxid = current - 1
-	}
+	// Keep lastKnownTxid unchanged: it names the txid represented by this
+	// handle's in-memory freelist. If another process committed before this
+	// handle reached the writer lock, refreshForWriter will see the newer
+	// meta txid and reload; if not, forcing the value backward would reload
+	// the current freelist as if it were external state.
 }
 
 // refreshForWriter refreshes the in-memory database state after

@@ -23,7 +23,7 @@ import (
 // Run under -race to also catch the unsynchronized read of lf.data versus the
 // munmap write. Reverting the guard makes this test crash the test binary.
 func TestCommitCounterReadDoesNotRaceClose(t *testing.T) {
-	for iter := 0; iter < 200; iter++ {
+	for iter := range 200 {
 		dir := t.TempDir()
 		db, err := bolt.Open(filepath.Join(dir, "test.db"), 0o600, nil)
 		if err != nil {
@@ -45,12 +45,12 @@ func TestCommitCounterReadDoesNotRaceClose(t *testing.T) {
 
 		var wg sync.WaitGroup
 		start := make(chan struct{})
-		for g := 0; g < 16; g++ {
+		for range 16 {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				<-start
-				for i := 0; i < 20000; i++ {
+				for range 20000 {
 					_ = db.CommitCounter()
 				}
 			}()

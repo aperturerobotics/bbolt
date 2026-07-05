@@ -13,7 +13,6 @@ been changed to `github.com/aperturerobotics/bbolt`.
 
 ---
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/aperturerobotics/bbolt?style=flat-square)](https://goreportcard.com/report/github.com/aperturerobotics/bbolt)
 [![Go Reference](https://pkg.go.dev/badge/github.com/aperturerobotics/bbolt.svg)](https://pkg.go.dev/github.com/aperturerobotics/bbolt)
 [![LICENSE](https://img.shields.io/github/license/etcd-io/bbolt.svg?style=flat-square)](https://github.com/etcd-io/bbolt/blob/master/LICENSE)
 
@@ -1039,7 +1038,6 @@ Below is a list of public, open source projects that use Bolt:
 * [drive](https://github.com/odeke-em/drive) - drive is an unofficial Google Drive command line client for \*NIX operating systems.
 * [event-shuttle](https://github.com/sclasen/event-shuttle) - A Unix system service to collect and reliably deliver messages to Kafka.
 * [Freehold](http://tshannon.bitbucket.org/freehold/) - An open, secure, and lightweight platform for your files and data.
-* [Go Report Card](https://goreportcard.com/) - Go code quality report cards as a (free and open source) service.
 * [GoWebApp](https://github.com/josephspurrier/gowebapp) - A basic MVC web application in Go using BoltDB.
 * [GoShort](https://github.com/pankajkhairnar/goShort) - GoShort is a URL shortener written in Golang and BoltDB for persistent key/value storage and for routing it's using high performent HTTPRouter.
 * [gopherpit](https://github.com/gopherpit/gopherpit) - A web service to manage Go remote import paths with custom domains

@@ -1026,10 +1026,11 @@ func (db *DB) RefreshForCoordinationLock() error {
 	db.rwlock.Lock()
 	defer db.rwlock.Unlock()
 
+	if err := db.acquireWriterLock(); err != nil {
+		return err
+	}
+	db.checkEscalation()
 	if db.lockFile != nil {
-		if err := db.lockFile.AcquireWriterLock(); err != nil {
-			return err
-		}
 		defer func() {
 			_ = db.lockFile.ReleaseWriterLock()
 		}()
@@ -1037,7 +1038,6 @@ func (db *DB) RefreshForCoordinationLock() error {
 			return err
 		}
 	}
-
 	db.metalock.Lock()
 	defer db.metalock.Unlock()
 
@@ -1184,6 +1184,7 @@ func (db *DB) beginTx() (*Tx, error) {
 	// obtain a write lock so all transactions must finish before it can be
 	// remapped.
 	db.mmaplock.RLock()
+	db.checkEscalation()
 
 	// Exit if the database is not open yet.
 	if !db.opened {
@@ -1255,18 +1256,18 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	// This ordering ensures only one goroutine per process holds the fcntl
 	// lock at a time, which is required because POSIX fcntl locks are
 	// per-process (not per-fd or per-thread).
+	if err := db.acquireWriterLock(); err != nil {
+		db.rwlock.Unlock()
+		return nil, err
+	}
+	db.checkEscalation()
 	if db.lockFile != nil {
-		if err := db.lockFile.AcquireWriterLock(); err != nil {
-			db.rwlock.Unlock()
-			return nil, err
-		}
 		if err := db.validateLockFile(); err != nil {
 			_ = db.lockFile.ReleaseWriterLock()
 			db.rwlock.Unlock()
 			return nil, err
 		}
 	}
-
 	// Once we have the writer lock then we can lock the meta pages so that
 	// we can set up the transaction.
 	db.metalock.Lock()
@@ -1356,6 +1357,20 @@ func (db *DB) exitAccessMode() {
 	if db.lockFile.DecrementWriterCount() == 0 {
 		db.lockFile.SetAccessMode(accessModeAvailable)
 	}
+}
+
+// beforeWriterLockHook is a test-only seam for scheduling an opener between
+// the escalation check and writer-lock acquisition.
+var beforeWriterLockHook func(*DB)
+
+func (db *DB) acquireWriterLock() error {
+	if beforeWriterLockHook != nil {
+		beforeWriterLockHook(db)
+	}
+	if db.lockFile == nil {
+		return nil
+	}
+	return db.lockFile.AcquireWriterLock()
 }
 
 // checkEscalation checks whether another writer-capable process has opened the

@@ -447,6 +447,69 @@ func TestDBAdaptiveCheckEscalationWriteTx(t *testing.T) {
 	}
 }
 
+// TestDBAdaptiveEscalationRefreshesAfterWriterLock forces another opener and
+// commit between the initial escalation check and writer-lock acquisition.
+func TestDBAdaptiveEscalationRefreshesAfterWriterLock(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db1, err := Open(dbPath, 0600, nil)
+	if err != nil {
+		t.Fatalf("Open db1: %v", err)
+	}
+	defer db1.Close()
+
+	if err := db1.Update(func(tx *Tx) error {
+		_, err := tx.CreateBucket([]byte("test"))
+		return err
+	}); err != nil {
+		t.Fatalf("initial Update: %v", err)
+	}
+	if !db1.singleProcess {
+		t.Fatal("expected db1 to be single-process before the forced interleaving")
+	}
+	beforeFreelist := db1.freelist
+
+	var hookErr error
+	var hookCalled bool
+	t.Cleanup(func() {
+		beforeWriterLockHook = nil
+	})
+	beforeWriterLockHook = func(*DB) {
+		beforeWriterLockHook = nil
+		hookCalled = true
+
+		db2, openErr := Open(dbPath, 0600, &Options{Timeout: 5 * time.Second})
+		if openErr != nil {
+			hookErr = openErr
+			return
+		}
+		defer db2.Close()
+
+		hookErr = db2.Update(func(tx *Tx) error {
+			return tx.Bucket([]byte("test")).Put([]byte("external"), []byte("commit"))
+		})
+	}
+
+	if err := db1.Update(func(tx *Tx) error {
+		return tx.Bucket([]byte("test")).Put([]byte("local"), []byte("commit"))
+	}); err != nil {
+		t.Fatalf("db1 Update after forced interleaving: %v", err)
+	}
+	if !hookCalled {
+		t.Fatal("writer-lock hook was not called")
+	}
+	if hookErr != nil {
+		t.Fatalf("forced external commit: %v", hookErr)
+	}
+	if db1.singleProcess {
+		t.Fatal("db1 remained in single-process mode after the external opener")
+	}
+	if db1.freelist == beforeFreelist {
+		t.Fatal("db1 reused its pre-commit freelist after the external commit")
+	}
+}
+
 func TestDBAdaptiveEscalationPreservesLocalFreelistTxid(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")

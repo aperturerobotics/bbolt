@@ -1,8 +1,6 @@
 module github.com/aperturerobotics/bbolt
 
-go 1.24.0
-
-toolchain go1.24.13
+go 1.26.4
 
 require (
 	github.com/aperturerobotics/fsnotify v1.9.1-0.20260329111252-827e5e9feeab

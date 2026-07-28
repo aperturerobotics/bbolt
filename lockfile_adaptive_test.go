@@ -143,6 +143,59 @@ func TestLockFileAccessModeSharedVisibility(t *testing.T) {
 	}
 }
 
+func TestDBConcurrentFirstOpenersEscalate(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	seed, err := Open(dbPath, 0600, nil)
+	if err != nil {
+		t.Fatalf("Open seed: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("Close seed: %v", err)
+	}
+
+	var second *DB
+	var hookErr error
+	var hookCalled bool
+	t.Cleanup(func() {
+		afterWriterCountIncrementHook = nil
+		if second != nil {
+			_ = second.Close()
+		}
+	})
+	afterWriterCountIncrementHook = func(_ *DB, count uint32) {
+		if count != 1 {
+			return
+		}
+		afterWriterCountIncrementHook = nil
+		hookCalled = true
+		second, hookErr = Open(dbPath, 0600, nil)
+	}
+
+	first, err := Open(dbPath, 0600, nil)
+	if err != nil {
+		t.Fatalf("Open first: %v", err)
+	}
+	defer first.Close()
+
+	if !hookCalled {
+		t.Fatal("writer-count hook was not called")
+	}
+	if hookErr != nil {
+		t.Fatalf("Open second: %v", hookErr)
+	}
+	if first.singleProcessEnabled() {
+		t.Fatal("first opener retained the single-process fast path")
+	}
+	if second.singleProcessEnabled() {
+		t.Fatal("second opener entered the single-process fast path")
+	}
+	if mode := first.lockFile.AccessMode(); mode < accessModeEscalating {
+		t.Fatalf("accessMode=%d, want escalating or multi", mode)
+	}
+}
+
 // TestLockFileClearStaleWriterState verifies that opening a lock file
 // with a stale writerCount (from a crashed process) resets the count
 // and accessMode when no live writer holds the fcntl lock.
@@ -200,6 +253,63 @@ func TestLockFileClearStaleWriterStatePreservesLiveReaderSlot(t *testing.T) {
 	}
 }
 
+func TestLockFileClearStaleWriterStateRechecksLiveOpener(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	seed, err := Open(dbPath, 0600, nil)
+	if err != nil {
+		t.Fatalf("Open seed: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("Close seed: %v", err)
+	}
+
+	lf, err := openLockFile(dbPath+"-lock", defaultMaxReaders)
+	if err != nil {
+		t.Fatalf("openLockFile: %v", err)
+	}
+	lf.IncrementWriterCount()
+	lf.SetAccessMode(accessModeSingle)
+	if err := lf.Close(); err != nil {
+		t.Fatalf("Close stale lock file: %v", err)
+	}
+
+	var live *DB
+	var hookErr error
+	var hookCalled bool
+	t.Cleanup(func() {
+		beforeStaleWriterLockHook = nil
+		if live != nil {
+			_ = live.Close()
+		}
+	})
+	beforeStaleWriterLockHook = func(*LockFile) {
+		beforeStaleWriterLockHook = nil
+		hookCalled = true
+		live, hookErr = Open(dbPath, 0600, nil)
+	}
+
+	recovered, err := Open(dbPath, 0600, nil)
+	if err != nil {
+		t.Fatalf("Open recovering handle: %v", err)
+	}
+	defer recovered.Close()
+
+	if !hookCalled {
+		t.Fatal("stale-writer hook was not called")
+	}
+	if hookErr != nil {
+		t.Fatalf("Open live handle: %v", hookErr)
+	}
+	if recovered.singleProcessEnabled() {
+		t.Fatal("recovering handle erased a live opener and entered the fast path")
+	}
+	if mode := recovered.lockFile.AccessMode(); mode < accessModeEscalating {
+		t.Fatalf("accessMode=%d, want escalating or multi", mode)
+	}
+}
+
 // NOTE: The "live writer preserves count" scenario (clearStaleWriterState
 // does NOT reset when another process holds the fcntl lock) cannot be tested
 // in-process because POSIX fcntl locks are per-process, not per-fd. The
@@ -252,7 +362,7 @@ func TestDBOpenAfterCrashRecovery(t *testing.T) {
 	}
 	defer db2.Close()
 
-	if !db2.singleProcess {
+	if !db2.singleProcessEnabled() {
 		t.Fatal("expected singleProcess=true after crash recovery")
 	}
 
@@ -289,7 +399,7 @@ func TestDBAdaptiveSingleProcess(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	if !db.singleProcess {
+	if !db.singleProcessEnabled() {
 		t.Fatal("expected singleProcess=true")
 	}
 	if m := db.lockFile.AccessMode(); m != accessModeSingle {
@@ -319,7 +429,7 @@ func TestDBAdaptiveSingleProcess(t *testing.T) {
 	}
 
 	// Still in single-process mode after transactions.
-	if !db.singleProcess {
+	if !db.singleProcessEnabled() {
 		t.Fatal("singleProcess should still be true after tx")
 	}
 
@@ -350,7 +460,7 @@ func TestDBAdaptiveEscalation(t *testing.T) {
 		t.Fatalf("Open db1: %v", err)
 	}
 
-	if !db1.singleProcess {
+	if !db1.singleProcessEnabled() {
 		t.Fatal("db1: expected singleProcess=true")
 	}
 
@@ -360,7 +470,7 @@ func TestDBAdaptiveEscalation(t *testing.T) {
 		t.Fatalf("Open db2: %v", err)
 	}
 
-	if db2.singleProcess {
+	if db2.singleProcessEnabled() {
 		t.Fatal("db2: expected singleProcess=false")
 	}
 
@@ -375,7 +485,7 @@ func TestDBAdaptiveEscalation(t *testing.T) {
 	}
 
 	// db1 should have escalated to multi.
-	if db1.singleProcess {
+	if db1.singleProcessEnabled() {
 		t.Fatal("db1: expected singleProcess=false after escalation")
 	}
 	if m := db1.lockFile.AccessMode(); m != accessModeMulti {
@@ -402,6 +512,41 @@ func TestDBAdaptiveEscalation(t *testing.T) {
 	}
 }
 
+func TestDBSingleProcessAccessSynchronized(t *testing.T) {
+	db := &DB{singleProcess: true}
+	ready := make(chan struct{}, 2)
+	start := make(chan struct{})
+	done := make(chan struct{}, 2)
+
+	t.Cleanup(func() {
+		beforeSingleProcessAccessHook = nil
+	})
+	beforeSingleProcessAccessHook = func() {
+		ready <- struct{}{}
+		<-start
+	}
+
+	go func() {
+		_ = db.singleProcessEnabled()
+		done <- struct{}{}
+	}()
+	go func() {
+		db.setSingleProcess(false)
+		done <- struct{}{}
+	}()
+
+	<-ready
+	<-ready
+	close(start)
+	<-done
+	<-done
+	beforeSingleProcessAccessHook = nil
+
+	if db.singleProcessEnabled() {
+		t.Fatal("single-process flag remained set")
+	}
+}
+
 // TestDBAdaptiveCheckEscalationWriteTx verifies that checkEscalation
 // fires at the start of write transactions (beginRWTx), not just reads.
 func TestDBAdaptiveCheckEscalationWriteTx(t *testing.T) {
@@ -421,7 +566,7 @@ func TestDBAdaptiveCheckEscalationWriteTx(t *testing.T) {
 		t.Fatalf("initial Update: %v", err)
 	}
 
-	if !db1.singleProcess {
+	if !db1.singleProcessEnabled() {
 		t.Fatal("expected singleProcess=true before escalation")
 	}
 
@@ -439,7 +584,7 @@ func TestDBAdaptiveCheckEscalationWriteTx(t *testing.T) {
 		t.Fatalf("Update after escalation: %v", err)
 	}
 
-	if db1.singleProcess {
+	if db1.singleProcessEnabled() {
 		t.Fatal("expected singleProcess=false after write tx escalation")
 	}
 	if m := db1.lockFile.AccessMode(); m != accessModeMulti {
@@ -465,7 +610,7 @@ func TestDBAdaptiveEscalationRefreshesAfterWriterLock(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("initial Update: %v", err)
 	}
-	if !db1.singleProcess {
+	if !db1.singleProcessEnabled() {
 		t.Fatal("expected db1 to be single-process before the forced interleaving")
 	}
 	beforeFreelist := db1.freelist
@@ -502,7 +647,7 @@ func TestDBAdaptiveEscalationRefreshesAfterWriterLock(t *testing.T) {
 	if hookErr != nil {
 		t.Fatalf("forced external commit: %v", hookErr)
 	}
-	if db1.singleProcess {
+	if db1.singleProcessEnabled() {
 		t.Fatal("db1 remained in single-process mode after the external opener")
 	}
 	if db1.freelist == beforeFreelist {
@@ -541,7 +686,7 @@ func TestDBAdaptiveEscalationPreservesLocalFreelistTxid(t *testing.T) {
 
 	before := db1.lastKnownTxid
 	db1.checkEscalation()
-	if db1.singleProcess {
+	if db1.singleProcessEnabled() {
 		t.Fatal("expected db1 to escalate")
 	}
 	if got := db1.lastKnownTxid; got != before {
@@ -628,7 +773,7 @@ func TestDBAdaptiveEscalationMidTransaction(t *testing.T) {
 	}
 
 	// db1 is still single (checkEscalation at beginTx saw mode=single).
-	if !db1.singleProcess {
+	if !db1.singleProcessEnabled() {
 		t.Fatal("expected singleProcess=true during tx")
 	}
 
@@ -643,7 +788,7 @@ func TestDBAdaptiveEscalationMidTransaction(t *testing.T) {
 	if m := db1.lockFile.AccessMode(); m != accessModeEscalating {
 		t.Fatalf("mid-tx accessMode=%d, want %d", m, accessModeEscalating)
 	}
-	if !db1.singleProcess {
+	if !db1.singleProcessEnabled() {
 		t.Fatal("db1 should still be singleProcess during tx")
 	}
 
@@ -653,7 +798,7 @@ func TestDBAdaptiveEscalationMidTransaction(t *testing.T) {
 	}
 
 	// Now db1 should have escalated.
-	if db1.singleProcess {
+	if db1.singleProcessEnabled() {
 		t.Fatal("expected singleProcess=false after tx.close")
 	}
 	if m := db1.lockFile.AccessMode(); m != accessModeMulti {
@@ -691,7 +836,7 @@ func TestDBAdaptiveReadOnlyNoImpact(t *testing.T) {
 	}
 	defer dbWriter.Close()
 
-	if !dbWriter.singleProcess {
+	if !dbWriter.singleProcessEnabled() {
 		t.Fatal("writer: expected singleProcess=true")
 	}
 
@@ -703,7 +848,7 @@ func TestDBAdaptiveReadOnlyNoImpact(t *testing.T) {
 	defer dbReader.Close()
 
 	// Writer should still be in single-process mode.
-	if !dbWriter.singleProcess {
+	if !dbWriter.singleProcessEnabled() {
 		t.Fatal("writer: singleProcess should be true after read-only open")
 	}
 	if m := dbWriter.lockFile.AccessMode(); m != accessModeSingle {
@@ -740,7 +885,7 @@ func TestDBAdaptiveReopenAfterTeardown(t *testing.T) {
 	}
 	defer db.Close()
 
-	if !db.singleProcess {
+	if !db.singleProcessEnabled() {
 		t.Fatal("expected singleProcess=true after reopen")
 	}
 	if m := db.lockFile.AccessMode(); m != accessModeSingle {
@@ -785,7 +930,7 @@ func TestDBAdaptiveMultipleWriteTransactions(t *testing.T) {
 	}
 
 	// Still single-process after many tx.
-	if !db.singleProcess {
+	if !db.singleProcessEnabled() {
 		t.Fatal("singleProcess should be true after multiple writes")
 	}
 

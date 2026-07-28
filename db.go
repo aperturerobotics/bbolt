@@ -138,10 +138,8 @@ type DB struct {
 	stats    *Stats
 
 	lockFile *LockFile
-	// lockFileMu guards the lockFile pointer lifetime so CommitCounter and
-	// WaitCommitCounter cannot dereference the lock-file mmap while close()
-	// munmaps it and nils the pointer. close() holds it across the lock-file
-	// teardown; the counter readers hold it per atomic load only.
+	// lockFileMu guards the lockFile pointer lifetime and singleProcess. Close
+	// holds it across lock-file teardown; readers hold it for each access.
 	lockFileMu    sync.Mutex
 	readerSlot    int    // index of this DB instance's reader slot in the lock file
 	lastKnownTxid uint64 // last meta txid seen by this process (for detecting external commits)
@@ -1204,7 +1202,7 @@ func (db *DB) beginTx() (*Tx, error) {
 	// In multi-process mode, another process may have grown the DB file
 	// beyond our current mmap. Skip in single-process mode (no external
 	// writer to grow the file).
-	if !db.singleProcess && db.lockFile != nil {
+	if !db.singleProcessEnabled() && db.lockFile != nil {
 		meta := db.meta()
 		maxNeeded := int(meta.Pgid()) * db.pageSize
 		if maxNeeded > db.datasz {
@@ -1295,7 +1293,7 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	// In multi-process mode, another process may have committed changes
 	// since we last loaded the freelist. Skip in single-process mode
 	// (no external commits possible).
-	if !db.singleProcess && db.lockFile != nil {
+	if !db.singleProcessEnabled() && db.lockFile != nil {
 		if err := db.refreshForWriter(); err != nil {
 			_ = db.lockFile.ReleaseWriterLock()
 			db.rwlock.Unlock()
@@ -1327,23 +1325,46 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	return t, nil
 }
 
+// beforeSingleProcessAccessHook is a test-only seam for aligning concurrent
+// accesses to the local fast-path flag.
+var beforeSingleProcessAccessHook func()
+
+func (db *DB) singleProcessEnabled() bool {
+	if beforeSingleProcessAccessHook != nil {
+		beforeSingleProcessAccessHook()
+	}
+	db.lockFileMu.Lock()
+	defer db.lockFileMu.Unlock()
+	return db.singleProcess
+}
+
+func (db *DB) setSingleProcess(enabled bool) {
+	if beforeSingleProcessAccessHook != nil {
+		beforeSingleProcessAccessHook()
+	}
+	db.lockFileMu.Lock()
+	db.singleProcess = enabled
+	db.lockFileMu.Unlock()
+}
+
+// afterWriterCountIncrementHook is a test-only seam for scheduling another
+// opener between the writer count increment and access mode transition.
+var afterWriterCountIncrementHook func(*DB, uint32)
+
 // enterAccessMode registers this process as a writer-capable opener and
 // determines whether to use the single-process fast path or full
 // multi-process coordination.
 //
 // Single-process mode skips refreshForWriter and the beginTx remap check
-// (no external writer to cause file growth or commit changes). All other
-// coordination (per-tx fcntl locks, reader table ops, and refreshForWriter)
-// is always performed for correctness.
+// because no external writer can grow the file or commit changes.
 //
 // Must be called during db.Open() before any transactions.
 func (db *DB) enterAccessMode() error {
 	newCount := db.lockFile.IncrementWriterCount()
-	db.singleProcess = newCount == 1 && db.lockFile.CASAccessMode(accessModeAvailable, accessModeSingle)
-	if !db.singleProcess {
-		// Signal escalation if still in single mode.
-		db.lockFile.CASAccessMode(accessModeSingle, accessModeEscalating)
+	if afterWriterCountIncrementHook != nil {
+		afterWriterCountIncrementHook(db, newCount)
 	}
+	db.setSingleProcess(db.lockFile.transitionAccessMode(newCount))
 	return nil
 }
 
@@ -1354,7 +1375,7 @@ func (db *DB) exitAccessMode() {
 	if db.lockFile == nil {
 		return
 	}
-	db.singleProcess = false
+	db.setSingleProcess(false)
 	if db.lockFile.DecrementWriterCount() == 0 {
 		db.lockFile.SetAccessMode(accessModeAvailable)
 	}
@@ -1377,9 +1398,9 @@ func (db *DB) acquireWriterLock() error {
 // checkEscalation checks whether another writer-capable process has opened the
 // DB and needs this process to transition from single-process fast path to full
 // multi-process coordination.
-//
-// Cost: one atomic load (~1ns) when in single-process mode.
 func (db *DB) checkEscalation() {
+	db.lockFileMu.Lock()
+	defer db.lockFileMu.Unlock()
 	if !db.singleProcess || db.lockFile == nil {
 		return
 	}

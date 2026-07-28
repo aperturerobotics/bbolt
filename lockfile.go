@@ -286,30 +286,46 @@ func openReadOnlyLockFile(path string, maxReaders int) (*LockFile, error) {
 	return nil, err
 }
 
+// beforeStaleWriterLockHook is a test-only seam for scheduling an opener after
+// the initial reader check and before stale-state recovery takes the writer lock.
+var beforeStaleWriterLockHook func(*LockFile)
+
 // clearStaleWriterState resets writerCount and accessMode when no live
 // writer process holds the fcntl lock. This recovers from process crashes
 // that left the count elevated without decrementing.
 //
-// Uses TryAcquireWriterLock (non-blocking fcntl F_SETLK) as a liveness
-// probe: if the lock is available, no other process is between its
-// enterAccessMode and exitAccessMode calls, so the count is stale.
+// Recovery publishes available before clearing the observed stale count. If an
+// opener changes the count, recovery forces multi mode instead of erasing it.
 func (lf *LockFile) clearStaleWriterState() {
 	h := lf.header()
-	if atomic.LoadUint32(&h.writerCount) == 0 {
+	staleCount := atomic.LoadUint32(&h.writerCount)
+	if staleCount == 0 {
 		return
 	}
 	lf.ClearStaleReaders()
 	if lf.hasReaderSlots() {
 		return
 	}
+	if beforeStaleWriterLockHook != nil {
+		beforeStaleWriterLockHook(lf)
+	}
 	acquired, err := lf.TryAcquireWriterLock()
 	if err != nil || !acquired {
 		return // another writer is alive, count is accurate
 	}
-	// No writer holds the lock. Reset stale state.
-	atomic.StoreUint32(&h.writerCount, 0)
+	defer func() {
+		_ = lf.ReleaseWriterLock()
+	}()
+
+	lf.ClearStaleReaders()
+	if lf.hasReaderSlots() {
+		return
+	}
 	atomic.StoreUint32(&h.accessMode, accessModeAvailable)
-	_ = lf.ReleaseWriterLock()
+	if !atomic.CompareAndSwapUint32(&h.writerCount, staleCount, 0) {
+		// A new opener incremented the count after the reader check.
+		atomic.StoreUint32(&h.accessMode, accessModeMulti)
+	}
 }
 
 // accessModePtr returns a pointer to the accessMode field in the mmap'd header
@@ -331,6 +347,34 @@ func (lf *LockFile) CASAccessMode(old, new uint32) bool {
 // SetAccessMode stores the access mode atomically.
 func (lf *LockFile) SetAccessMode(mode uint32) {
 	atomic.StoreUint32(lf.accessModePtr(), mode)
+}
+
+// transitionAccessMode reconciles the shared mode after incrementing the writer
+// count. Every failed CAS retries against the current mode, so a concurrent
+// opener cannot leave available or single mode behind when the count exceeds one.
+func (lf *LockFile) transitionAccessMode(newCount uint32) bool {
+	for {
+		mode := lf.AccessMode()
+		if newCount == 1 && mode == accessModeAvailable {
+			if lf.CASAccessMode(accessModeAvailable, accessModeSingle) {
+				return true
+			}
+			continue
+		}
+
+		switch mode {
+		case accessModeAvailable:
+			if lf.CASAccessMode(accessModeAvailable, accessModeMulti) {
+				return false
+			}
+		case accessModeSingle:
+			if lf.CASAccessMode(accessModeSingle, accessModeEscalating) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
 }
 
 // commitCounterPtr returns a pointer to the commitCounter field in the mmap'd

@@ -1884,7 +1884,12 @@ func childReaderWriterChurnReader(dbPath string) {
 		fmt.Fprintf(os.Stderr, "reader begin tx: %v\n", err)
 		os.Exit(1)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if err := tx.Rollback(); err != nil {
+			fmt.Fprintf(os.Stderr, "reader rollback tx: %v\n", err)
+			os.Exit(1)
+		}
+	}()
 
 	b := tx.Bucket([]byte("churn"))
 	if b == nil {
@@ -2147,7 +2152,12 @@ func childHoldCoordinationLock(dbPath string) {
 		fmt.Fprintf(os.Stderr, "coord holder acquire: ok=%v err=%v\n", ok, err)
 		os.Exit(1)
 	}
-	defer db.ReleaseCoordinationLock()
+	defer func() {
+		if err := db.ReleaseCoordinationLock(); err != nil {
+			fmt.Fprintf(os.Stderr, "coord holder release: %v\n", err)
+			os.Exit(1)
+		}
+	}()
 	if err := db.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte("coord"))
 		if err != nil {
@@ -2190,7 +2200,12 @@ func childTryCoordinationLock(dbPath string) {
 		fmt.Fprintf(os.Stderr, "coord probe busy\n")
 		os.Exit(2)
 	}
-	defer db.ReleaseCoordinationLock()
+	defer func() {
+		if err := db.ReleaseCoordinationLock(); err != nil {
+			fmt.Fprintf(os.Stderr, "coord probe release: %v\n", err)
+			os.Exit(1)
+		}
+	}()
 }
 
 func churnValue(iter, i int) []byte {

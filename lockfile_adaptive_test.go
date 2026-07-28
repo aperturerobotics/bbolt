@@ -1,6 +1,7 @@
 package bbolt
 
 import (
+	"bytes"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -652,6 +653,92 @@ func TestDBAdaptiveEscalationRefreshesAfterWriterLock(t *testing.T) {
 	}
 	if db1.freelist == beforeFreelist {
 		t.Fatal("db1 reused its pre-commit freelist after the external commit")
+	}
+}
+
+func TestDBOpenFreelistTxidPairingRefreshesAfterInterleavedCommit(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	scratchValue := bytes.Repeat([]byte("s"), 128*1024)
+	externalValue := bytes.Repeat([]byte("e"), 64*1024)
+	localValue := bytes.Repeat([]byte("l"), 64*1024)
+
+	db, err := Open(dbPath, 0600, nil)
+	if err != nil {
+		t.Fatalf("Open setup db: %v", err)
+	}
+	if err := db.Update(func(tx *Tx) error {
+		for _, name := range []string{"external", "local", "scratch"} {
+			if _, err := tx.CreateBucket([]byte(name)); err != nil {
+				return err
+			}
+		}
+		return tx.Bucket([]byte("scratch")).Put([]byte("value"), scratchValue)
+	}); err != nil {
+		t.Fatalf("seed free pages: %v", err)
+	}
+	if err := db.Update(func(tx *Tx) error {
+		return tx.Bucket([]byte("scratch")).Delete([]byte("value"))
+	}); err != nil {
+		t.Fatalf("free scratch pages: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close setup db: %v", err)
+	}
+
+	var hookErr error
+	t.Cleanup(func() {
+		beforeOpenFreelistTxidHook = nil
+	})
+	beforeOpenFreelistTxidHook = func(*DB) {
+		beforeOpenFreelistTxidHook = nil
+
+		other, openErr := Open(dbPath, 0600, &Options{Timeout: 5 * time.Second})
+		if openErr != nil {
+			hookErr = openErr
+			return
+		}
+		defer other.Close()
+
+		hookErr = other.Update(func(tx *Tx) error {
+			return tx.Bucket([]byte("external")).Put([]byte("value"), externalValue)
+		})
+	}
+
+	db, err = Open(dbPath, 0600, &Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("Open db with interleaved commit: %v", err)
+	}
+	if hookErr != nil {
+		_ = db.Close()
+		t.Fatalf("interleaved commit: %v", hookErr)
+	}
+	if err := db.Update(func(tx *Tx) error {
+		return tx.Bucket([]byte("local")).Put([]byte("value"), localValue)
+	}); err != nil {
+		_ = db.Close()
+		t.Fatalf("local commit: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close db after local commit: %v", err)
+	}
+
+	db, err = Open(dbPath, 0600, nil)
+	if err != nil {
+		t.Fatalf("Reopen db: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.View(func(tx *Tx) error {
+		if got := tx.Bucket([]byte("external")).Get([]byte("value")); !bytes.Equal(got, externalValue) {
+			return fmt.Errorf("external value was overwritten: got %d bytes, want %d", len(got), len(externalValue))
+		}
+		if got := tx.Bucket([]byte("local")).Get([]byte("value")); !bytes.Equal(got, localValue) {
+			return fmt.Errorf("local value mismatch: got %d bytes, want %d", len(got), len(localValue))
+		}
+		return <-tx.Check()
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

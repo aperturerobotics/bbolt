@@ -4,12 +4,21 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	berrors "github.com/aperturerobotics/bbolt/errors"
 )
 
+func requireRemovableOpenFiles(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not allow removing open database or lock files")
+	}
+}
+
 func TestLockFileValidatePathChanged(t *testing.T) {
+	requireRemovableOpenFiles(t)
 	lf := openTestLockFile(t)
 
 	if err := os.Remove(lf.Path()); err != nil {
@@ -26,6 +35,7 @@ func TestLockFileValidatePathChanged(t *testing.T) {
 }
 
 func TestDBBeginFailsWhenLockFileChanged(t *testing.T) {
+	requireRemovableOpenFiles(t)
 	db := openTestDBWithBucket(t)
 	defer db.Close()
 
@@ -49,6 +59,7 @@ func TestDBBeginFailsWhenLockFileChanged(t *testing.T) {
 }
 
 func TestDBBeginClosesWhenDatabaseFileRemoved(t *testing.T) {
+	requireRemovableOpenFiles(t)
 	db := openTestDBWithBucket(t)
 	defer db.Close()
 
@@ -67,6 +78,7 @@ func TestDBBeginClosesWhenDatabaseFileRemoved(t *testing.T) {
 }
 
 func TestTxCommitFailsWhenLockFileRemoved(t *testing.T) {
+	requireRemovableOpenFiles(t)
 	db := openTestDBWithBucket(t)
 	defer db.Close()
 
@@ -95,6 +107,7 @@ func TestTxCommitFailsWhenLockFileRemoved(t *testing.T) {
 }
 
 func TestTxCommitFailsWhenLockFileRemovedAfterCommitStarts(t *testing.T) {
+	requireRemovableOpenFiles(t)
 	db := openTestDBWithBucket(t)
 	defer db.Close()
 

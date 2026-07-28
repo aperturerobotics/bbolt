@@ -451,18 +451,17 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 		return nil, err
 	}
 
-	if db.PreLoadFreelist {
-		db.loadFreelist()
-	}
-
-	// Track the txid represented by the loaded freelist. Single-process
-	// handles update this on every successful commit so escalation can
-	// distinguish local commits already reflected in memory from later
-	// commits made by another process.
+	// Capture the metadata txid before loading the freelist. A concurrent commit
+	// during loading leaves this marker stale and forces a refresh.
 	if db.lockFile != nil {
 		db.lastKnownTxid = uint64(db.meta().Txid())
 	}
-
+	if beforeOpenFreelistTxidHook != nil {
+		beforeOpenFreelistTxidHook(db)
+	}
+	if db.PreLoadFreelist {
+		db.loadFreelist()
+	}
 	if db.readOnly {
 		return db, nil
 	}
@@ -1380,6 +1379,10 @@ func (db *DB) exitAccessMode() {
 		db.lockFile.SetAccessMode(accessModeAvailable)
 	}
 }
+
+// beforeOpenFreelistTxidHook is a test-only seam for scheduling a commit
+// between the txid marker read and the freelist load.
+var beforeOpenFreelistTxidHook func(*DB)
 
 // beforeWriterLockHook is a test-only seam for scheduling an opener between
 // the escalation check and writer-lock acquisition.

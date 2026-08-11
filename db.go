@@ -1070,7 +1070,9 @@ func (db *DB) remapForCoordinationLock() error {
 	db.restoreReadonlyTxidsToFreelist()
 	db.deferReloadedFreePagesForActiveReaders(meta.Txid())
 	if db.stats != nil {
+		db.statlock.Lock()
 		db.stats.FreePageN = db.freelist.FreeCount()
+		db.statlock.Unlock()
 	}
 	db.lastKnownTxid = uint64(meta.Txid())
 	return nil

@@ -11,13 +11,18 @@ import (
 	berrors "github.com/aperturerobotics/bbolt/errors"
 )
 
-// processLockFiles tracks how many LockFile instances are open per path
-// within this process. Used by clearStaleWriterState to avoid probing
-// the fcntl lock when another opener in the same process holds it
-// (POSIX fcntl locks are per-process, not per-fd, so the probe would
-// always succeed and incorrectly reset live state).
+// processLockFile serializes writer locks across handles for one path.
+// POSIX record locks are process-scoped, so the kernel cannot exclude two
+// handles opened by this process and an unlock from either handle releases the
+// process-wide lock.
+type processLockFile struct {
+	writerMu sync.Mutex
+	fileInfo os.FileInfo
+	count    int
+}
+
 var (
-	processLockFiles   = make(map[string]int)
+	processLockFiles   = make(map[*processLockFile]struct{})
 	processLockFilesMu sync.Mutex
 )
 
@@ -116,11 +121,12 @@ func lockFileSize(maxReaders int) int {
 // coordination. It is memory-mapped MAP_SHARED so that atomic operations
 // on the mapped bytes are visible across processes.
 type LockFile struct {
-	fd         *os.File
-	coordFd    *os.File
-	data       []byte
-	path       string
-	maxReaders int
+	fd          *os.File
+	coordFd     *os.File
+	data        []byte
+	path        string
+	maxReaders  int
+	processLock *processLockFile
 }
 
 // MaxReaders returns the maximum number of reader slots.
@@ -153,6 +159,44 @@ func (lf *LockFile) ValidatePath() error {
 	}
 
 	return fmt.Errorf("%w: lock file path (%s) no longer matches the open coordination file", berrors.ErrLockFileChanged, lf.path)
+}
+
+// beforeProcessWriterLockHook is a test-only seam for observing a blocking
+// acquisition before it enters the process-local mutex.
+var beforeProcessWriterLockHook func(*LockFile)
+
+// AcquireWriterLock acquires the process-local and cross-process writer lock.
+// Writer locks are not reentrant, including across handles in this process.
+func (lf *LockFile) AcquireWriterLock() error {
+	if beforeProcessWriterLockHook != nil {
+		beforeProcessWriterLockHook(lf)
+	}
+	lf.processLock.writerMu.Lock()
+	if err := lf.acquireWriterLock(); err != nil {
+		lf.processLock.writerMu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// TryAcquireWriterLock attempts to acquire the writer lock without blocking.
+// It returns false when any handle in this process already holds the lock.
+func (lf *LockFile) TryAcquireWriterLock() (bool, error) {
+	if !lf.processLock.writerMu.TryLock() {
+		return false, nil
+	}
+	acquired, err := lf.tryAcquireWriterLock()
+	if err != nil || !acquired {
+		lf.processLock.writerMu.Unlock()
+	}
+	return acquired, err
+}
+
+// ReleaseWriterLock releases the cross-process and process-local writer lock.
+func (lf *LockFile) ReleaseWriterLock() error {
+	err := lf.releaseWriterLock()
+	lf.processLock.writerMu.Unlock()
+	return err
 }
 
 // header returns a pointer to the lockFileHeader in the mmap'd region.
@@ -210,12 +254,29 @@ func openLockFile(path string, maxReaders int) (*LockFile, error) {
 		return nil, fmt.Errorf("bbolt: mmap lock file: %w", err)
 	}
 
+	processLockFilesMu.Lock()
+	var processLock *processLockFile
+	for openLock := range processLockFiles {
+		if os.SameFile(info, openLock.fileInfo) {
+			processLock = openLock
+			break
+		}
+	}
+	firstOpener := processLock == nil
+	if firstOpener {
+		processLock = &processLockFile{fileInfo: info}
+		processLockFiles[processLock] = struct{}{}
+	}
+	processLock.count++
+	processLockFilesMu.Unlock()
+
 	lf := &LockFile{
-		fd:         f,
-		coordFd:    coordF,
-		data:       data,
-		path:       path,
-		maxReaders: maxReaders,
+		fd:          f,
+		coordFd:     coordF,
+		data:        data,
+		path:        path,
+		maxReaders:  maxReaders,
+		processLock: processLock,
 	}
 
 	// Use the magic field as the publish marker for the header. Multiple
@@ -257,11 +318,6 @@ func openLockFile(path string, maxReaders int) (*LockFile, error) {
 	// POSIX fcntl locks are per-process (not per-fd), so the liveness
 	// probe would always succeed when another opener in the same process
 	// holds the lock, incorrectly resetting live state.
-	processLockFilesMu.Lock()
-	firstOpener := processLockFiles[path] == 0
-	processLockFiles[path]++
-	processLockFilesMu.Unlock()
-
 	if firstOpener {
 		lf.clearStaleWriterState()
 	}
@@ -434,10 +490,12 @@ func (lf *LockFile) DecrementWriterCount() uint32 {
 // Close unmaps the lock file data and closes the file descriptor.
 func (lf *LockFile) Close() error {
 	processLockFilesMu.Lock()
-	if n := processLockFiles[lf.path]; n <= 1 {
-		delete(processLockFiles, lf.path)
-	} else {
-		processLockFiles[lf.path] = n - 1
+	if processLock := lf.processLock; processLock != nil {
+		processLock.count--
+		if processLock.count == 0 {
+			delete(processLockFiles, processLock)
+		}
+		lf.processLock = nil
 	}
 	processLockFilesMu.Unlock()
 

@@ -13,7 +13,7 @@ import (
 //
 // This implementation is for platforms (Solaris, AIX, Android) that use
 // syscall.FcntlFlock with a uintptr fd, matching bolt_android.go.
-func (lf *LockFile) AcquireWriterLock() error {
+func (lf *LockFile) acquireWriterLock() error {
 	lock := syscall.Flock_t{
 		Type:   syscall.F_WRLCK,
 		Whence: int16(io.SeekStart),
@@ -34,7 +34,7 @@ func (lf *LockFile) AcquireWriterLock() error {
 
 // TryAcquireWriterLock attempts to acquire the writer lock without blocking.
 // Returns true if acquired, false if another process holds it.
-func (lf *LockFile) TryAcquireWriterLock() (bool, error) {
+func (lf *LockFile) tryAcquireWriterLock() (bool, error) {
 	lock := syscall.Flock_t{
 		Type:   syscall.F_WRLCK,
 		Whence: int16(io.SeekStart),
@@ -57,7 +57,7 @@ func (lf *LockFile) TryAcquireWriterLock() (bool, error) {
 }
 
 // ReleaseWriterLock releases the cross-process writer lock.
-func (lf *LockFile) ReleaseWriterLock() error {
+func (lf *LockFile) releaseWriterLock() error {
 	lock := syscall.Flock_t{
 		Type:   syscall.F_UNLCK,
 		Whence: int16(io.SeekStart),

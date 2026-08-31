@@ -9,7 +9,7 @@ import (
 // AcquireWriterLock acquires the cross-process writer lock.
 // Blocks until the lock is available. Uses LockFileEx with
 // LOCKFILE_EXCLUSIVE_LOCK on the writer lock region of the lock file.
-func (lf *LockFile) AcquireWriterLock() error {
+func (lf *LockFile) acquireWriterLock() error {
 	err := windows.LockFileEx(
 		windows.Handle(lf.fd.Fd()),
 		windows.LOCKFILE_EXCLUSIVE_LOCK,
@@ -28,7 +28,7 @@ func (lf *LockFile) AcquireWriterLock() error {
 
 // TryAcquireWriterLock attempts to acquire the writer lock without blocking.
 // Returns true if acquired, false if another process holds it.
-func (lf *LockFile) TryAcquireWriterLock() (bool, error) {
+func (lf *LockFile) tryAcquireWriterLock() (bool, error) {
 	err := windows.LockFileEx(
 		windows.Handle(lf.fd.Fd()),
 		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
@@ -49,7 +49,7 @@ func (lf *LockFile) TryAcquireWriterLock() (bool, error) {
 }
 
 // ReleaseWriterLock releases the cross-process writer lock.
-func (lf *LockFile) ReleaseWriterLock() error {
+func (lf *LockFile) releaseWriterLock() error {
 	err := windows.UnlockFileEx(
 		windows.Handle(lf.fd.Fd()),
 		0,

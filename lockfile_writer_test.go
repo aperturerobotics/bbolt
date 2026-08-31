@@ -3,7 +3,6 @@ package bbolt
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
 )
@@ -29,23 +28,13 @@ func TestWriterLockAcquireRelease(t *testing.T) {
 		t.Fatalf("AcquireWriterLock: %v", err)
 	}
 
-	// Verify the lock is held by trying to acquire again (non-blocking).
-	// On POSIX, fcntl locks are per-process, so a second TryAcquire from
-	// the same process succeeds (the lock is already held by this process).
-	// On Windows, LockFileEx is not reentrant on the same handle, so
-	// TryAcquire returns false (ERROR_LOCK_VIOLATION).
+	// Verify the lock is not reentrant.
 	ok, err := lf.TryAcquireWriterLock()
 	if err != nil {
 		t.Fatalf("TryAcquireWriterLock: %v", err)
 	}
-	if runtime.GOOS == "windows" {
-		if ok {
-			t.Fatal("TryAcquireWriterLock should return false on Windows (not reentrant)")
-		}
-	} else {
-		if !ok {
-			t.Fatal("TryAcquireWriterLock returned false for same-process lock")
-		}
+	if ok {
+		t.Fatal("TryAcquireWriterLock acquired an already-held process lock")
 	}
 
 	// Release the writer lock.
@@ -86,19 +75,6 @@ func TestWriterLockTryAcquire(t *testing.T) {
 }
 
 func TestWriterLockExclusion(t *testing.T) {
-	// Note: fcntl byte-range locks are per-process on POSIX, not per-fd.
-	// This means two goroutines in the same process using the SAME lock file
-	// fd will share the lock. To test true exclusion, we open a SECOND fd
-	// to the same file. On POSIX, both fds belong to the same process so
-	// the kernel still treats them as the same lock holder -- fcntl locks
-	// are per-process, not per-fd. Therefore, this in-process test cannot
-	// verify cross-process exclusion.
-	//
-	// Cross-process exclusion testing is deferred to Step 5 (multi-process
-	// tests using exec.Command to spawn child processes).
-	//
-	// This test verifies that the API works correctly when called from
-	// multiple goroutines with separate LockFile instances on the same file.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db-lock")
 
@@ -114,31 +90,101 @@ func TestWriterLockExclusion(t *testing.T) {
 	}
 	defer lf2.Close()
 
-	// On POSIX: both fds are in the same process, so fcntl treats them
-	// as the same lock. Both will succeed.
-	// On Windows: locks are per-handle, so the second acquire would block
-	// or fail. We test the non-blocking path.
-
 	if err := lf1.AcquireWriterLock(); err != nil {
 		t.Fatalf("lf1 AcquireWriterLock: %v", err)
 	}
-
-	ok, err := lf2.TryAcquireWriterLock()
-	if err != nil {
+	if ok, err := lf2.TryAcquireWriterLock(); err != nil {
 		t.Fatalf("lf2 TryAcquireWriterLock: %v", err)
+	} else if ok {
+		t.Fatal("second handle acquired the process writer lock")
 	}
-	// On POSIX: ok will be true (same process). On Windows: ok will be
-	// false (different handle). We accept both behaviors in this test.
-	_ = ok
-
 	if err := lf1.ReleaseWriterLock(); err != nil {
 		t.Fatalf("lf1 ReleaseWriterLock: %v", err)
 	}
-	// Release lf2 only if it acquired.
-	if ok {
-		if err := lf2.ReleaseWriterLock(); err != nil {
-			t.Fatalf("lf2 ReleaseWriterLock: %v", err)
+
+	if ok, err := lf2.TryAcquireWriterLock(); err != nil {
+		t.Fatalf("lf2 TryAcquireWriterLock after release: %v", err)
+	} else if !ok {
+		t.Fatal("second handle did not acquire after release")
+	}
+	if err := lf2.ReleaseWriterLock(); err != nil {
+		t.Fatalf("lf2 ReleaseWriterLock: %v", err)
+	}
+}
+
+func TestWriterLockBlocksAcrossHandles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db-lock")
+	lf1, err := openLockFile(path, defaultMaxReaders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lf1.Close()
+	lf2, err := openLockFile(path, defaultMaxReaders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lf2.Close()
+
+	if err := lf1.AcquireWriterLock(); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	beforeProcessWriterLockHook = func(lf *LockFile) {
+		if lf == lf2 {
+			close(entered)
 		}
+	}
+	defer func() { beforeProcessWriterLockHook = nil }()
+
+	result := make(chan error, 1)
+	go func() {
+		result <- lf2.AcquireWriterLock()
+	}()
+	<-entered
+	select {
+	case err := <-result:
+		t.Fatalf("second handle did not block: %v", err)
+	default:
+	}
+	if err := lf1.ReleaseWriterLock(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if err := lf2.ReleaseWriterLock(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWriterLockExcludesAliasedPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db-lock")
+	alias := dir + string(os.PathSeparator) + "." + string(os.PathSeparator) + "test.db-lock"
+
+	lf1, err := openLockFile(path, defaultMaxReaders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lf1.Close()
+
+	lf2, err := openLockFile(alias, defaultMaxReaders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lf2.Close()
+
+	if err := lf1.AcquireWriterLock(); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := lf2.TryAcquireWriterLock(); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatal("aliased handle acquired the process writer lock")
+	}
+	if err := lf1.ReleaseWriterLock(); err != nil {
+		t.Fatal(err)
 	}
 }
 

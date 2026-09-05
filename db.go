@@ -592,7 +592,9 @@ func (db *DB) loadFreelist() {
 			db.freelist.Read(db.page(db.meta().Freelist()))
 		}
 		if db.stats != nil {
+			db.statlock.Lock()
 			db.stats.FreePageN = db.freelist.FreeCount()
+			db.statlock.Unlock()
 		}
 	})
 }
@@ -1490,7 +1492,9 @@ func (db *DB) refreshForWriter() error {
 	db.restoreReadonlyTxidsToFreelist()
 	db.deferReloadedFreePagesForActiveReaders(meta.Txid())
 	if db.stats != nil {
+		db.statlock.Lock()
 		db.stats.FreePageN = db.freelist.FreeCount()
+		db.statlock.Unlock()
 	}
 	return nil
 }

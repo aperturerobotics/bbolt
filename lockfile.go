@@ -150,7 +150,7 @@ func (lf *LockFile) ValidatePath() error {
 	if err != nil {
 		return fmt.Errorf("bbolt: stat open lock file (%s): %w", lf.path, err)
 	}
-	pathInfo, err := os.Stat(lf.path)
+	pathInfo, err := statLockFilePath(lf.path)
 	if err != nil {
 		return fmt.Errorf("%w: stat lock file path (%s): %v", berrors.ErrLockFileChanged, lf.path, err)
 	}

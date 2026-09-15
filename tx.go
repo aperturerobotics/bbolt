@@ -33,6 +33,9 @@ type Tx struct {
 	pages          map[common.Pgid]*common.Page
 	stats          TxStats
 	commitHandlers []func()
+	// inodeBuffers owns all pooled mutable page entries until this tx closes.
+	inodeBuffers []*inodeBuffer
+	inodeTail    common.Inodes
 
 	// WriteFlag specifies the flag for write-related methods like WriteTo().
 	// Tx opens the database file with the specified flag to copy the data.
@@ -242,8 +245,6 @@ func (tx *Tx) Commit() (err error) {
 	}
 	commitPhase = true
 	tx.db.panicIfLockFileChanged()
-
-	// TODO(benbjohnson): Use vectorized I/O to write out dirty pages.
 
 	// Rebalance nodes which have had deletions.
 	var startTime = time.Now()
@@ -470,6 +471,7 @@ func (tx *Tx) close() {
 	}
 
 	// Clear all references.
+	tx.releaseInodes()
 	tx.db = nil
 	tx.meta = nil
 	tx.root = Bucket{tx: tx}
@@ -626,6 +628,12 @@ func (tx *Tx) write() error {
 	// Clear out page cache early.
 	tx.pages = make(map[common.Pgid]*common.Page)
 	sort.Sort(pages)
+	buffer := pageWriteBuffers.Get().(*pageWriteBuffer)
+	defer func() {
+		clear(buffer[:])
+		pageWriteBuffers.Put(buffer)
+	}()
+	writer := pageWriter{tx: tx, buffer: buffer[:0]}
 
 	// Write pages to disk in order.
 	for _, p := range pages {
@@ -638,13 +646,9 @@ func (tx *Tx) write() error {
 			sz := min(rem, common.MaxAllocSize-1)
 			buf := common.UnsafeByteSlice(unsafe.Pointer(p), written, 0, int(sz))
 
-			if _, err := tx.db.ops.writeAt(buf, offset); err != nil {
-				lg.Errorf("writeAt failed, offset: %d: %v", offset, err)
+			if err := writer.write(buf, offset); err != nil {
 				return err
 			}
-
-			// Update statistics.
-			tx.stats.IncWrite(1)
 
 			// Exit inner for loop if we've written all the chunks.
 			rem -= sz
@@ -656,6 +660,10 @@ func (tx *Tx) write() error {
 			offset += int64(sz)
 			written += uintptr(sz)
 		}
+	}
+
+	if err := writer.flush(); err != nil {
+		return err
 	}
 
 	// Ignore file sync if flag is set on DB.

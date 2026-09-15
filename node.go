@@ -129,6 +129,7 @@ func (n *node) put(oldKey, newKey, value []byte, pgId common.Pgid, flags uint32)
 	// Add capacity and shift nodes if we don't have an exact match and need to insert.
 	exact := len(n.inodes) > 0 && index < len(n.inodes) && bytes.Equal(n.inodes[index].Key(), oldKey)
 	if !exact {
+		n.growInodes(len(n.inodes) + 1)
 		n.inodes = append(n.inodes, common.Inode{})
 		copy(n.inodes[index+1:], n.inodes[index:])
 	}
@@ -162,7 +163,15 @@ func (n *node) del(key []byte) {
 func (n *node) read(p *common.Page) {
 	n.pgid = p.Id()
 	n.isLeaf = p.IsLeafPage()
-	n.inodes = common.ReadInodeFromPage(p)
+	count := int(p.Count())
+	if n.bucket != nil && n.bucket.tx != nil {
+		// Reserve insertion space while decoding the page. An exact-sized
+		// array otherwise reallocates as soon as the first new key arrives.
+		n.inodes = n.bucket.tx.allocInodes(count, count+max(count/4, 1))
+		common.ReadInodesInto(p, n.inodes)
+	} else {
+		n.inodes = common.ReadInodeFromPage(p)
+	}
 
 	// Save first key, so we can find the node in the parent when we spill.
 	if len(n.inodes) > 0 {
@@ -438,6 +447,7 @@ func (n *node) rebalance() {
 	}
 
 	// Copy over inodes from right node to left node and remove right node.
+	leftNode.growInodes(len(leftNode.inodes) + len(rightNode.inodes))
 	leftNode.inodes = append(leftNode.inodes, rightNode.inodes...)
 	n.parent.del(rightNode.key)
 	n.parent.removeChild(rightNode)

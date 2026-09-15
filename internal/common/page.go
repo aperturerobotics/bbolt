@@ -80,13 +80,13 @@ func (p *Page) Meta() *Meta {
 }
 
 func (p *Page) FastCheck(id Pgid) {
-	Assert(p.id == id, "Page expected to be: %v, but self identifies as %v", id, p.id)
+	if p.id != id {
+		Assert(false, "Page expected to be: %v, but self identifies as %v", id, p.id)
+	}
 	// Only one flag of page-type can be set.
-	Assert(p.IsBranchPage() ||
-		p.IsLeafPage() ||
-		p.IsMetaPage() ||
-		p.IsFreelistPage(),
-		"page %v: has unexpected type/flags: %x", p.id, p.flags)
+	if !p.IsBranchPage() && !p.IsLeafPage() && !p.IsMetaPage() && !p.IsFreelistPage() {
+		Assert(false, "page %v: has unexpected type/flags: %x", p.id, p.flags)
+	}
 }
 
 // LeafPageElement retrieves the leaf node by index
@@ -122,7 +122,9 @@ func (p *Page) BranchPageElements() []branchPageElement {
 }
 
 func (p *Page) FreelistPageCount() (int, int) {
-	Assert(p.IsFreelistPage(), fmt.Sprintf("can't get freelist page count from a non-freelist page: %2x", p.flags))
+	if !p.IsFreelistPage() {
+		Assert(false, "can't get freelist page count from a non-freelist page: %2x", p.flags)
+	}
 
 	// If the page.count is at the max uint16 value (64k) then it's considered
 	// an overflow and the size of the freelist is stored as the first element.
@@ -140,7 +142,9 @@ func (p *Page) FreelistPageCount() (int, int) {
 }
 
 func (p *Page) FreelistPageIds() []Pgid {
-	Assert(p.IsFreelistPage(), fmt.Sprintf("can't get freelist page IDs from a non-freelist page: %2x", p.flags))
+	if !p.IsFreelistPage() {
+		Assert(false, "can't get freelist page IDs from a non-freelist page: %2x", p.flags)
+	}
 
 	idx, count := p.FreelistPageCount()
 

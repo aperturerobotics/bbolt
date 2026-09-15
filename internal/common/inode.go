@@ -48,9 +48,17 @@ func (in *Inode) SetValue(value []byte) {
 
 func ReadInodeFromPage(p *Page) Inodes {
 	inodes := make(Inodes, int(p.Count()))
+	ReadInodesInto(p, inodes)
+	return inodes
+}
+
+// ReadInodesInto decodes a page into caller-owned entries. The destination
+// must have room for Count entries; decoded keys and values borrow the page.
+func ReadInodesInto(p *Page, inodes Inodes) {
 	isLeaf := p.IsLeafPage()
 	for i := 0; i < int(p.Count()); i++ {
 		inode := &inodes[i]
+		*inode = Inode{}
 		if isLeaf {
 			elem := p.LeafPageElement(uint16(i))
 			inode.SetFlags(elem.Flags())
@@ -63,8 +71,6 @@ func ReadInodeFromPage(p *Page) Inodes {
 		}
 		Assert(len(inode.Key()) > 0, "read: zero-length inode key")
 	}
-
-	return inodes
 }
 
 func WriteInodeToPage(inodes Inodes, p *Page) uint32 {

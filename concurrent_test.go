@@ -31,7 +31,7 @@ const (
 	// TestConcurrentCaseDuration is used as a env variable to specify the
 	// concurrent test duration.
 	testConcurrentCaseDuration    = "TEST_CONCURRENT_CASE_DURATION"
-	defaultConcurrentTestDuration = 30 * time.Second
+	defaultConcurrentTestDuration = 10 * time.Second
 )
 
 type duration struct {

@@ -26,7 +26,7 @@ func newPagesCommand() *cobra.Command {
 		Long: strings.TrimLeft(`
 Pages prints a table of pages with their type (meta, leaf, branch, freelist).
 Leaf and branch pages will show a key count in the "items" column while the
-freelist will show the number of free pages in the "items" column.
+freelist will show the number of free page spans in the "items" column.
 
 The "overflow" column shows the number of blocks that the page spills over
 into. Normally there is no overflow but large keys and values can cause

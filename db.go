@@ -466,9 +466,10 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 		return db, nil
 	}
 
-	// Flush freelist when transitioning from no sync to sync so
-	// NoFreelistSync unaware boltdb can open the db later.
-	if !db.NoFreelistSync && !db.hasSyncedFreelist() {
+	// Flush the freelist when transitioning from no sync to sync, or when the
+	// file holds a freelist format this version does not read, so later opens
+	// read it instead of scanning the tree.
+	if !db.NoFreelistSync && !db.hasReadableFreelist() {
 		tx, txErr := db.Begin(true)
 		if tx != nil {
 			txErr = tx.Commit()
@@ -574,13 +575,13 @@ func (db *DB) getPageSizeFromSecondMeta() (int, bool, error) {
 	return 0, metaCanRead, berrors.ErrInvalid
 }
 
-// loadFreelist reads the freelist if it is synced, or reconstructs it
-// by scanning the DB if it is not synced. It assumes there are no
+// loadFreelist reads the freelist if it is synced in the current format, or
+// reconstructs it by scanning the DB otherwise. It assumes there are no
 // concurrent accesses being made to the freelist.
 func (db *DB) loadFreelist() {
 	db.freelistLoad.Do(func() {
 		db.freelist = newFreelist(db.FreelistType)
-		if !db.hasSyncedFreelist() {
+		if !db.hasReadableFreelist() {
 			// Reconstruct free list by scanning the DB.
 			freepages, err := db.freepages()
 			if err != nil {
@@ -601,6 +602,33 @@ func (db *DB) loadFreelist() {
 
 func (db *DB) hasSyncedFreelist() bool {
 	return db.meta().Freelist() != common.PgidNoFreelist
+}
+
+// hasReadableFreelist reports whether the meta references a freelist page in
+// the span format. Pages written by older versions are rebuilt by a scan and
+// replaced at the next commit.
+func (db *DB) hasReadableFreelist() bool {
+	return db.hasSyncedFreelist() && db.page(db.meta().Freelist()).IsFreelistPage()
+}
+
+// reloadFreelist replaces the in-memory freelist with the one committed at
+// meta, deferring free pages that local or cross-process readers may still
+// use.
+func (db *DB) reloadFreelist(meta *common.Meta) error {
+	p := db.page(meta.Freelist())
+	if !p.IsFreelistPage() {
+		return fmt.Errorf("bbolt: freelist page %d has type %s, written by an older bbolt", p.Id(), p.Typ())
+	}
+	db.freelist = newFreelist(db.FreelistType)
+	db.freelist.Read(p)
+	db.restoreReadonlyTxidsToFreelist()
+	db.deferReloadedFreePagesForActiveReaders(meta.Txid())
+	if db.stats != nil {
+		db.statlock.Lock()
+		db.stats.FreePageN = db.freelist.FreeCount()
+		db.statlock.Unlock()
+	}
+	return nil
 }
 
 func (db *DB) fileSize() (int, error) {
@@ -813,8 +841,7 @@ func (db *DB) init() error {
 	// Write an empty freelist at page 3.
 	p := db.pageInBuffer(buf, common.Pgid(2))
 	p.SetId(2)
-	p.SetFlags(common.FreelistPageFlag)
-	p.SetCount(0)
+	p.WriteFreelistPage(nil)
 
 	// Write an empty leaf page at page 4.
 	p = db.pageInBuffer(buf, common.Pgid(3))
@@ -1067,14 +1094,8 @@ func (db *DB) remapForCoordinationLock() error {
 		return fmt.Errorf("bbolt: remap for coordination refresh: %w", err)
 	}
 	meta := db.meta()
-	db.freelist = newFreelist(db.FreelistType)
-	db.freelist.Read(db.page(meta.Freelist()))
-	db.restoreReadonlyTxidsToFreelist()
-	db.deferReloadedFreePagesForActiveReaders(meta.Txid())
-	if db.stats != nil {
-		db.statlock.Lock()
-		db.stats.FreePageN = db.freelist.FreeCount()
-		db.statlock.Unlock()
+	if err := db.reloadFreelist(meta); err != nil {
+		return err
 	}
 	db.lastKnownTxid = uint64(meta.Txid())
 	return nil
@@ -1487,16 +1508,7 @@ func (db *DB) refreshForWriter() error {
 	// Reload the freelist from the current on-disk state.
 	// The previous freelist holds only Go-managed memory (maps, slices)
 	// with no external resources, so it is safe to let the GC reclaim it.
-	db.freelist = newFreelist(db.FreelistType)
-	db.freelist.Read(db.page(meta.Freelist()))
-	db.restoreReadonlyTxidsToFreelist()
-	db.deferReloadedFreePagesForActiveReaders(meta.Txid())
-	if db.stats != nil {
-		db.statlock.Lock()
-		db.stats.FreePageN = db.freelist.FreeCount()
-		db.statlock.Unlock()
-	}
-	return nil
+	return db.reloadFreelist(meta)
 }
 
 func (db *DB) deferReloadedFreePagesForActiveReaders(metaTxid common.Txid) {
@@ -1934,7 +1946,15 @@ func (db *DB) freepages() (fids []common.Pgid, err error) {
 
 	// TODO: If check bucket reported any corruptions (ech) we shouldn't proceed to freeing the pages.
 
-	for i := common.Pgid(2); i < db.meta().Pgid(); i++ {
+	// The freelist page the meta references stays allocated so the next
+	// commit can free it.
+	if fl := tx.meta.Freelist(); fl != common.PgidNoFreelist {
+		p := db.page(fl)
+		for i := uint32(0); i <= p.Overflow(); i++ {
+			reachable[fl+common.Pgid(i)] = p
+		}
+	}
+	for i := common.Pgid(2); i < tx.meta.Pgid(); i++ {
 		if _, ok := reachable[i]; !ok {
 			fids = append(fids, i)
 		}

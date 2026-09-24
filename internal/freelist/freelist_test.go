@@ -313,23 +313,14 @@ func TestTxidSorting(t *testing.T) {
 
 // Ensure that a freelist can deserialize from a freelist page.
 func TestFreelist_read(t *testing.T) {
-	// Create a page.
 	var buf [4096]byte
 	page := (*common.Page)(unsafe.Pointer(&buf[0]))
-	page.SetFlags(common.FreelistPageFlag)
-	page.SetCount(2)
+	page.WriteFreelistPage([]common.FreelistSpan{{Start: 23, Len: 2}, {Start: 50, Len: 1}})
 
-	// Insert 2 page ids.
-	ids := (*[3]common.Pgid)(unsafe.Add(unsafe.Pointer(page), unsafe.Sizeof(*page)))
-	ids[0] = 23
-	ids[1] = 50
-
-	// Deserialize page into a freelist.
 	f := newTestFreelist()
 	f.Read(page)
 
-	// Ensure that there are two page ids in the freelist.
-	if exp := common.Pgids([]common.Pgid{23, 50}); !reflect.DeepEqual(exp, f.freePageIds()) {
+	if exp := common.Pgids([]common.Pgid{23, 24, 50}); !reflect.DeepEqual(exp, f.freePageIds()) {
 		t.Fatalf("exp=%v; got=%v", exp, f.freePageIds())
 	}
 }
@@ -510,10 +501,12 @@ func TestFreelist_E2E_SerDe_HappyPath(t *testing.T) {
 	freelist.Free(common.Txid(3), common.NewPage(10, common.LeafPageFlag, 0, 2))
 	requirePages(t, freelist, common.Pgids{5, 6, 8}, common.Pgids{3, 4, 10, 11, 12})
 
+	// Two free spans and five pending pages bound the page at seven spans.
 	buf := make([]byte, 4096)
 	p := common.LoadPage(buf)
-	require.Equal(t, 80, freelist.EstimatedWritePageSize())
+	require.Equal(t, common.FreelistPageSize(7), freelist.EstimatedWritePageSize())
 	freelist.Write(p)
+	require.Equal(t, []common.FreelistSpan{{Start: 3, Len: 4}, {Start: 8, Len: 1}, {Start: 10, Len: 3}}, p.FreelistPageSpans())
 
 	loadFreeList := newTestFreelist()
 	loadFreeList.Init([]common.Pgid{})
@@ -525,29 +518,37 @@ func TestFreelist_E2E_SerDe_HappyPath(t *testing.T) {
 func TestFreelist_E2E_SerDe_AcrossImplementations(t *testing.T) {
 	testSizes := []int{0, 1, 10, 100, 1000, math.MaxUint16, math.MaxUint16 + 1, math.MaxUint16 * 2}
 	for _, size := range testSizes {
-		t.Run(fmt.Sprintf("n=%d", size), func(t *testing.T) {
-			freelist := newTestFreelist()
-			expectedFreePgids := common.Pgids{}
-			for i := range size {
-				pgid := common.Pgid(i + 2)
-				freelist.Free(common.Txid(1), common.NewPage(pgid, common.LeafPageFlag, 0, 0))
-				expectedFreePgids = append(expectedFreePgids, pgid)
-			}
-			freelist.ReleasePendingPages()
-			requirePages(t, freelist, expectedFreePgids, common.Pgids{})
-			buf := make([]byte, freelist.EstimatedWritePageSize())
-			p := common.LoadPage(buf)
-			freelist.Write(p)
+		for _, stride := range []int{1, 2} {
+			t.Run(fmt.Sprintf("n=%d/stride=%d", size, stride), func(t *testing.T) {
+				testFreelistSerDe(t, size, stride)
+			})
+		}
+	}
+}
 
-			for n, loadFreeList := range map[string]Interface{
-				"hashmap": NewHashMapFreelist(),
-				"array":   NewArrayFreelist(),
-			} {
-				t.Run(n, func(t *testing.T) {
-					loadFreeList.Read(p)
-					requirePages(t, loadFreeList, expectedFreePgids, common.Pgids{})
-				})
-			}
+// testFreelistSerDe frees size pages stride apart, writes the freelist into a
+// buffer of its estimated size, and reads it back with each implementation.
+func testFreelistSerDe(t *testing.T, size, stride int) {
+	freelist := newTestFreelist()
+	expectedFreePgids := common.Pgids{}
+	for i := range size {
+		pgid := common.Pgid(i*stride + 2)
+		freelist.Free(common.Txid(1), common.NewPage(pgid, common.LeafPageFlag, 0, 0))
+		expectedFreePgids = append(expectedFreePgids, pgid)
+	}
+	freelist.ReleasePendingPages()
+	requirePages(t, freelist, expectedFreePgids, common.Pgids{})
+	buf := make([]byte, freelist.EstimatedWritePageSize())
+	p := common.LoadPage(buf)
+	freelist.Write(p)
+
+	for n, loadFreeList := range map[string]Interface{
+		"hashmap": NewHashMapFreelist(),
+		"array":   NewArrayFreelist(),
+	} {
+		t.Run(n, func(t *testing.T) {
+			loadFreeList.Read(p)
+			requirePages(t, loadFreeList, expectedFreePgids, common.Pgids{})
 		})
 	}
 }

@@ -15,11 +15,14 @@ const BranchPageElementSize = unsafe.Sizeof(branchPageElement{})
 const LeafPageElementSize = unsafe.Sizeof(leafPageElement{})
 const pgidSize = unsafe.Sizeof(Pgid(0))
 
+// freelistCountSize is the size of the span count leading a freelist page.
+const freelistCountSize = unsafe.Sizeof(uint64(0))
+
 const (
 	BranchPageFlag   = 0x01
 	LeafPageFlag     = 0x02
 	MetaPageFlag     = 0x04
-	FreelistPageFlag = 0x10
+	FreelistPageFlag = 0x20
 )
 
 const (
@@ -121,41 +124,66 @@ func (p *Page) BranchPageElements() []branchPageElement {
 	return elems
 }
 
-func (p *Page) FreelistPageCount() (int, int) {
-	if !p.IsFreelistPage() {
-		Assert(false, "can't get freelist page count from a non-freelist page: %2x", p.flags)
-	}
-
-	// If the page.count is at the max uint16 value (64k) then it's considered
-	// an overflow and the size of the freelist is stored as the first element.
-	var idx, count = 0, int(p.count)
-	if count == 0xFFFF {
-		idx = 1
-		c := *(*Pgid)(UnsafeAdd(unsafe.Pointer(p), unsafe.Sizeof(*p)))
-		count = int(c)
-		if count < 0 {
-			panic(fmt.Sprintf("leading element count %d overflows int", c))
-		}
-	}
-
-	return idx, count
+// FreelistSpan is a run of Len consecutive free pages beginning at Start.
+type FreelistSpan struct {
+	Start Pgid
+	Len   uint64
 }
 
-func (p *Page) FreelistPageIds() []Pgid {
+// End returns the page id following the span.
+func (s FreelistSpan) End() Pgid {
+	return s.Start + Pgid(s.Len)
+}
+
+// FreelistSpanIds returns the page ids covered by spans.
+func FreelistSpanIds(spans []FreelistSpan) Pgids {
+	var n uint64
+	for _, span := range spans {
+		n += span.Len
+	}
+	ids := make(Pgids, 0, n)
+	for _, span := range spans {
+		for id := span.Start; id < span.End(); id++ {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// FreelistPageSize returns the bytes a freelist page needs to hold n spans.
+func FreelistPageSize(n int) int {
+	return int(PageHeaderSize) + int(freelistCountSize) + n*int(unsafe.Sizeof(FreelistSpan{}))
+}
+
+// FreelistPageSpans returns the spans stored in a freelist page, sorted by
+// start page. The page body holds a uint64 span count followed by the spans.
+// The returned slice aliases the page.
+func (p *Page) FreelistPageSpans() []FreelistSpan {
 	if !p.IsFreelistPage() {
-		Assert(false, "can't get freelist page IDs from a non-freelist page: %2x", p.flags)
+		Assert(false, "can't get freelist spans from a non-freelist page: %2x", p.flags)
 	}
 
-	idx, count := p.FreelistPageCount()
-
+	data := UnsafeAdd(unsafe.Pointer(p), unsafe.Sizeof(*p))
+	count := *(*uint64)(data)
 	if count == 0 {
 		return nil
 	}
+	if count > uint64(^uint(0)>>1) {
+		panic(fmt.Sprintf("freelist span count %d overflows int", count))
+	}
+	return unsafe.Slice((*FreelistSpan)(UnsafeAdd(data, freelistCountSize)), int(count))
+}
 
-	data := UnsafeIndex(unsafe.Pointer(p), unsafe.Sizeof(*p), pgidSize, idx)
-	ids := unsafe.Slice((*Pgid)(data), count)
-
-	return ids
+// WriteFreelistPage marks p as a freelist page holding spans. The page must
+// have room for FreelistPageSize(len(spans)) bytes.
+func (p *Page) WriteFreelistPage(spans []FreelistSpan) {
+	p.flags = FreelistPageFlag
+	p.count = 0
+	data := UnsafeAdd(unsafe.Pointer(p), unsafe.Sizeof(*p))
+	*(*uint64)(data) = uint64(len(spans))
+	if len(spans) != 0 {
+		copy(unsafe.Slice((*FreelistSpan)(UnsafeAdd(data, freelistCountSize)), len(spans)), spans)
+	}
 }
 
 // dump writes n bytes of the page to STDERR as hex output.

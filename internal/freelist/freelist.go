@@ -5,7 +5,7 @@ import (
 )
 
 type ReadWriter interface {
-	// Read calls Init with the page ids stored in the given page.
+	// Read initializes the freelist from the spans stored in the given page.
 	Read(page *common.Page)
 
 	// Write writes the freelist into the given page.
@@ -72,6 +72,16 @@ type Interface interface {
 
 	// freePageIds returns the IDs of all free pages. Returns an empty slice if no free pages are available.
 	freePageIds() common.Pgids
+
+	// freeSpans returns the free pages as spans sorted by start page.
+	freeSpans() []common.FreelistSpan
+
+	// freeSpanCount returns the number of spans freeSpans would return.
+	freeSpanCount() int
+
+	// initSpans initializes this freelist with the given sorted spans. It does
+	// not retain spans.
+	initSpans(spans []common.FreelistSpan)
 
 	// pendingPageIds returns all pending pages by transaction id.
 	pendingPageIds() map[common.Txid]*txPending

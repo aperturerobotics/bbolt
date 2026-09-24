@@ -400,7 +400,7 @@ func (tx *Tx) rollback() {
 		// When mmap fails, the `data`, `dataref` and `datasz` may be reset to
 		// zero values, and there is no way to reload free page IDs in this case.
 		if tx.db.data != nil {
-			if !tx.db.hasSyncedFreelist() {
+			if !tx.db.hasReadableFreelist() {
 				// Reconstruct free page list by scanning the DB to get the whole free page list.
 				// Note: scanning the whole db is heavy if your db size is large in NoSyncFreeList mode.
 				freepages, err := tx.db.freepages()
@@ -789,9 +789,13 @@ func (tx *Tx) Page(id int) (*common.PageInfo, error) {
 	}
 
 	// Determine the type (or if it's free).
-	if tx.db.freelist.Freed(common.Pgid(id)) {
+	switch {
+	case tx.db.freelist.Freed(common.Pgid(id)):
 		info.Type = "free"
-	} else {
+	case p.IsFreelistPage():
+		info.Type = p.Typ()
+		info.Count = len(p.FreelistPageSpans())
+	default:
 		info.Type = p.Typ()
 	}
 

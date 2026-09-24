@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"unsafe"
 
 	"github.com/aperturerobotics/bbolt/internal/common"
 )
@@ -185,7 +184,6 @@ func (t *shared) DeferFreePages(txid common.Txid) {
 	txp.ids = append(txp.ids, ids...)
 	txp.alloctx = append(txp.alloctx, make([]common.Txid, len(ids))...)
 	t.Init(nil)
-	t.reindex()
 }
 
 func (t *shared) release(txid common.Txid) {
@@ -236,12 +234,17 @@ func (t *shared) releaseRange(begin, end common.Txid) {
 // Copyall copies a list of all free ids and all pending ids in one sorted list.
 // f.count returns the minimum length required for dst.
 func (t *shared) Copyall(dst []common.Pgid) {
-	m := make(common.Pgids, 0, t.PendingCount())
-	for _, txp := range t.pendingPageIds() {
-		m = append(m, txp.ids...)
+	common.Mergepgids(dst, t.freePageIds(), t.sortedPendingIds())
+}
+
+// sortedPendingIds returns the ids of all pending pages in ascending order.
+func (t *shared) sortedPendingIds() common.Pgids {
+	ids := make(common.Pgids, 0, t.PendingCount())
+	for _, txp := range t.pending {
+		ids = append(ids, txp.ids...)
 	}
-	sort.Sort(m)
-	common.Mergepgids(dst, t.freePageIds(), m)
+	sort.Sort(ids)
+	return ids
 }
 
 func (t *shared) Reload(p *common.Page) {
@@ -289,53 +292,50 @@ func (t *shared) Read(p *common.Page) {
 	if !p.IsFreelistPage() {
 		panic(fmt.Sprintf("invalid freelist page: %d, page type is %s", p.Id(), p.Typ()))
 	}
-
-	ids := p.FreelistPageIds()
-
-	// Copy the list of page ids from the freelist.
-	if len(ids) == 0 {
-		t.Init([]common.Pgid{})
-	} else {
-		// copy the ids, so we don't modify on the freelist page directly
-		idsCopy := make([]common.Pgid, len(ids))
-		copy(idsCopy, ids)
-		// Make sure they're sorted.
-		sort.Sort(common.Pgids(idsCopy))
-
-		t.Init(idsCopy)
-	}
+	t.initSpans(p.FreelistPageSpans())
 }
 
 func (t *shared) EstimatedWritePageSize() int {
-	n := t.Count()
-	if n >= 0xFFFF {
-		// The first element will be used to store the count. See freelist.write.
-		n++
-	}
-	return int(common.PageHeaderSize) + (int(unsafe.Sizeof(common.Pgid(0))) * n)
+	// Every pending page adds at most one span.
+	return common.FreelistPageSize(t.freeSpanCount() + t.PendingCount())
 }
 
+// Write stores the free and pending pages as one sorted list of spans.
+// Pending pages are included: after a reopen no transaction can still read
+// them, and a process that reloads the page defers free pages for its own
+// active readers.
 func (t *shared) Write(p *common.Page) {
-	// Combine the old free pgids and pgids waiting on an open transaction.
-
-	// Update the header flag.
-	p.SetFlags(common.FreelistPageFlag)
-
-	// The page.count can only hold up to 64k elements so if we overflow that
-	// number then we handle it by putting the size in the first element.
-	l := t.Count()
-	if l == 0 {
-		p.SetCount(uint16(l))
-	} else if l < 0xFFFF {
-		p.SetCount(uint16(l))
-		data := common.UnsafeAdd(unsafe.Pointer(p), unsafe.Sizeof(*p))
-		ids := unsafe.Slice((*common.Pgid)(data), l)
-		t.Copyall(ids)
-	} else {
-		p.SetCount(0xFFFF)
-		data := common.UnsafeAdd(unsafe.Pointer(p), unsafe.Sizeof(*p))
-		ids := unsafe.Slice((*common.Pgid)(data), l+1)
-		ids[0] = common.Pgid(l)
-		t.Copyall(ids[1:])
+	free := t.freeSpans()
+	pending := t.sortedPendingIds()
+	spans := make([]common.FreelistSpan, 0, len(free)+len(pending))
+	var next int
+	for _, span := range free {
+		for ; next < len(pending) && pending[next] < span.Start; next++ {
+			spans = appendSpan(spans, common.FreelistSpan{Start: pending[next], Len: 1})
+		}
+		spans = appendSpan(spans, span)
 	}
+	for _, id := range pending[next:] {
+		spans = appendSpan(spans, common.FreelistSpan{Start: id, Len: 1})
+	}
+	p.WriteFreelistPage(spans)
+}
+
+// appendSpan appends span to spans, extending the last span when span
+// continues it. Spans must be appended in ascending order.
+func appendSpan(spans []common.FreelistSpan, span common.FreelistSpan) []common.FreelistSpan {
+	if n := len(spans); n != 0 && spans[n-1].End() == span.Start {
+		spans[n-1].Len += span.Len
+		return spans
+	}
+	return append(spans, span)
+}
+
+// idSpans returns the spans covering the sorted page ids.
+func idSpans(ids common.Pgids) []common.FreelistSpan {
+	var spans []common.FreelistSpan
+	for _, id := range ids {
+		spans = appendSpan(spans, common.FreelistSpan{Start: id, Len: 1})
+	}
+	return spans
 }

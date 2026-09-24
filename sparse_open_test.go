@@ -121,7 +121,7 @@ func TestSparseFreelistFreshProcessOpen(t *testing.T) {
 	}
 
 	freelistPage := db.page(activeMeta.Freelist())
-	originalIDs := append(common.Pgids(nil), freelistPage.FreelistPageIds()...)
+	originalIDs := common.FreelistSpanIds(freelistPage.FreelistPageSpans())
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -138,18 +138,13 @@ func TestSparseFreelistFreshProcessOpen(t *testing.T) {
 		t.Fatal("requested freelist cardinality overflows int64")
 	}
 	totalFreePages := uint64(len(originalIDs)) + requestedFreePages
-	pgidBytes := uint64(unsafe.Sizeof(common.Pgid(0)))
-	freelistBytes := uint64(common.PageHeaderSize)
-	if totalFreePages >= 0xFFFF {
-		if freelistBytes > ^uint64(0)-pgidBytes {
-			t.Fatal("freelist size overflows uint64")
-		}
-		freelistBytes += pgidBytes
-	}
-	if totalFreePages > (^uint64(0)-freelistBytes)/pgidBytes {
+	// Each free page adds at most one span.
+	spanBytes := uint64(unsafe.Sizeof(common.FreelistSpan{}))
+	freelistBytes := uint64(common.FreelistPageSize(0))
+	if totalFreePages > (^uint64(0)-freelistBytes)/spanBytes {
 		t.Fatal("freelist size overflows uint64")
 	}
-	freelistBytes += totalFreePages * pgidBytes
+	freelistBytes += totalFreePages * spanBytes
 	if freelistBytes > ^uint64(0)-pageSize+1 {
 		t.Fatal("freelist page count overflows uint64")
 	}

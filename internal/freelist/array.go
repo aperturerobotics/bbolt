@@ -18,6 +18,10 @@ func (f *array) Init(ids common.Pgids) {
 	f.reindex()
 }
 
+func (f *array) initSpans(spans []common.FreelistSpan) {
+	f.Init(common.FreelistSpanIds(spans))
+}
+
 func (f *array) Allocate(txid common.Txid, n int) common.Pgid {
 	if len(f.ids) == 0 {
 		return 0
@@ -66,6 +70,20 @@ func (f *array) FreeCount() int {
 
 func (f *array) freePageIds() common.Pgids {
 	return f.ids
+}
+
+func (f *array) freeSpans() []common.FreelistSpan {
+	return idSpans(f.ids)
+}
+
+func (f *array) freeSpanCount() int {
+	var n int
+	for i, id := range f.ids {
+		if i == 0 || id != f.ids[i-1]+1 {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *array) mergeSpans(ids common.Pgids) {

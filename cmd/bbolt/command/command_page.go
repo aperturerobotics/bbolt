@@ -212,17 +212,14 @@ func pagePrintBranch(w io.Writer, buf []byte) error {
 func pagePrintFreelist(w io.Writer, buf []byte) error {
 	p := common.LoadPage(buf)
 
-	// print number of items.
-	_, cnt := p.FreelistPageCount()
-	fmt.Fprintf(w, "Item Count: %d\n", cnt)
+	spans := p.FreelistPageSpans()
+	fmt.Fprintf(w, "Span Count: %d\n", len(spans))
 	fmt.Fprintf(w, "Overflow: %d\n", p.Overflow())
-
 	fmt.Fprintf(w, "\n")
 
-	// print each page in the freelist.
-	ids := p.FreelistPageIds()
-	for _, ids := range ids {
-		fmt.Fprintf(w, "%d\n", ids)
+	// Print each span as its first page and page count.
+	for _, span := range spans {
+		fmt.Fprintf(w, "%d+%d\n", span.Start, span.Len)
 	}
 	fmt.Fprintf(w, "\n")
 	return nil

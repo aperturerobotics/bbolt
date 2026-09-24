@@ -364,5 +364,5 @@ func readFreelistPageIds(path string) ([]common.Pgid, error) {
 		return nil, err
 	}
 
-	return p.FreelistPageIds(), nil
+	return common.FreelistSpanIds(p.FreelistPageSpans()), nil
 }

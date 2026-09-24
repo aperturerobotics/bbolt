@@ -222,7 +222,7 @@ $ ./bbolt inspect ~/default.etcd/member/snap/db
 - Pages prints a table of pages with their type (meta, leaf, branch, freelist).
 - The `meta` will store the metadata information of database.
 - The `leaf` and `branch` pages will show a key count in the `items` column.
-- The `freelist` will show the number of free pages, which are free for writing again.
+- The `freelist` will show the number of free page spans it stores.
 - The `overflow` column shows the number of blocks that the page spills over into.
 - usage:
   `bbolt pages [path to the bbolt database]`

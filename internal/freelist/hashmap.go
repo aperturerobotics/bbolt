@@ -1,8 +1,10 @@
 package freelist
 
 import (
+	"cmp"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 
 	"github.com/aperturerobotics/bbolt/internal/common"
@@ -21,40 +23,20 @@ type hashMap struct {
 }
 
 func (f *hashMap) Init(pgids common.Pgids) {
-	// reset the counter when freelist init
-	f.freePagesCount = 0
-	f.freemaps = make(map[uint64]pidSet)
-	f.forwardMap = make(map[common.Pgid]uint64)
-	f.backwardMap = make(map[common.Pgid]uint64)
-
-	if len(pgids) == 0 {
-		return
-	}
-
 	if !sort.SliceIsSorted([]common.Pgid(pgids), func(i, j int) bool { return pgids[i] < pgids[j] }) {
 		panic("pgids not sorted")
 	}
+	f.initSpans(idSpans(pgids))
+}
 
-	size := uint64(1)
-	start := pgids[0]
-
-	for i := 1; i < len(pgids); i++ {
-		// continuous page
-		if pgids[i] == pgids[i-1]+1 {
-			size++
-		} else {
-			f.addSpan(start, size)
-
-			size = 1
-			start = pgids[i]
-		}
+func (f *hashMap) initSpans(spans []common.FreelistSpan) {
+	f.freePagesCount = 0
+	f.freemaps = make(map[uint64]pidSet)
+	f.forwardMap = make(map[common.Pgid]uint64, len(spans))
+	f.backwardMap = make(map[common.Pgid]uint64, len(spans))
+	for _, span := range spans {
+		f.addSpan(span.Start, span.Len)
 	}
-
-	// init the tail
-	if size != 0 && start != 0 {
-		f.addSpan(start, size)
-	}
-
 	f.reindex()
 }
 
@@ -115,28 +97,22 @@ func (f *hashMap) FreeCount() int {
 }
 
 func (f *hashMap) freePageIds() common.Pgids {
-	count := f.FreeCount()
-	if count == 0 {
-		return common.Pgids{}
+	return common.FreelistSpanIds(f.freeSpans())
+}
+
+func (f *hashMap) freeSpans() []common.FreelistSpan {
+	spans := make([]common.FreelistSpan, 0, len(f.forwardMap))
+	for start, size := range f.forwardMap {
+		spans = append(spans, common.FreelistSpan{Start: start, Len: size})
 	}
+	slices.SortFunc(spans, func(a, b common.FreelistSpan) int {
+		return cmp.Compare(a.Start, b.Start)
+	})
+	return spans
+}
 
-	m := make([]common.Pgid, 0, count)
-
-	startPageIds := make([]common.Pgid, 0, len(f.forwardMap))
-	for k := range f.forwardMap {
-		startPageIds = append(startPageIds, k)
-	}
-	sort.Sort(common.Pgids(startPageIds))
-
-	for _, start := range startPageIds {
-		if size, ok := f.forwardMap[start]; ok {
-			for i := 0; i < int(size); i++ {
-				m = append(m, start+common.Pgid(i))
-			}
-		}
-	}
-
-	return m
+func (f *hashMap) freeSpanCount() int {
+	return len(f.forwardMap)
 }
 
 func (f *hashMap) hashmapFreeCountSlow() int {

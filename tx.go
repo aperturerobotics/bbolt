@@ -503,7 +503,7 @@ func (tx *Tx) Copy(w io.Writer) error {
 // WriteTo writes the entire database to a writer.
 // If err == nil then exactly tx.Size() bytes will be written into the writer.
 func (tx *Tx) WriteTo(w io.Writer) (n int64, err error) {
-	var f *os.File
+	var f io.ReaderAt = tx.db.storage
 	// There is a risk that between the time a read-only transaction
 	// is created and the time the file is actually opened, the
 	// underlying db file at tx.db.path may have been replaced
@@ -516,29 +516,29 @@ func (tx *Tx) WriteTo(w io.Writer) (n int64, err error) {
 	// but verify that it still refers to the same underlying file
 	// (by device and inode). If it does not, we fall back to
 	// reusing the existing already opened file handle.
-	if tx.WriteFlag != 0 {
+	if tx.WriteFlag != 0 && tx.db.file != nil {
 		// Attempt to open reader with WriteFlag
-		f, err = tx.db.openFile(tx.db.path, os.O_RDONLY|tx.WriteFlag, 0)
-		if err != nil {
-			return 0, err
+		wf, openErr := tx.db.openFile(tx.db.path, os.O_RDONLY|tx.WriteFlag, 0)
+		if openErr != nil {
+			return 0, openErr
 		}
 
-		if ok, err := sameFile(tx.db.file, f); !ok {
-			lg := tx.db.Logger()
-			if cerr := f.Close(); cerr != nil {
-				lg.Errorf("failed to close the file (%s): %v", tx.db.path, cerr)
-			}
-			lg.Warningf("The underlying file has changed, so reuse the already opened file (%s): %v", tx.db.path, err)
-			f = tx.db.file
-		} else {
+		same, sameErr := sameFile(tx.db.file, wf)
+		if same {
+			f = wf
 			defer func() {
-				if cerr := f.Close(); err == nil {
+				if cerr := wf.Close(); err == nil {
 					err = cerr
 				}
 			}()
 		}
-	} else {
-		f = tx.db.file
+		if !same {
+			lg := tx.db.Logger()
+			if cerr := wf.Close(); cerr != nil {
+				lg.Errorf("failed to close the file (%s): %v", tx.db.path, cerr)
+			}
+			lg.Warningf("The underlying file has changed, so reuse the already opened file (%s): %v", tx.db.path, sameErr)
+		}
 	}
 
 	// Generate a meta page. We use the same page data for both meta pages.
@@ -709,11 +709,12 @@ func (tx *Tx) write() error {
 }
 
 // sync flushes the transaction's writes, or only orders them for CommitOrdered.
+// A Storage has no ordering sync, so it always flushes.
 func (tx *Tx) sync() error {
-	if tx.ordered {
+	if tx.ordered && tx.db.file != nil {
 		return barrierfsync(tx.db)
 	}
-	return fdatasync(tx.db)
+	return tx.db.sync()
 }
 
 // writeMeta writes the meta to the disk.

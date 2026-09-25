@@ -33,6 +33,8 @@ type Tx struct {
 	pages          map[common.Pgid]*common.Page
 	stats          TxStats
 	commitHandlers []func()
+	// ordered commits with write ordering instead of a full flush.
+	ordered bool
 	// inodeBuffers owns all pooled mutable page entries until this tx closes.
 	inodeBuffers []*inodeBuffer
 	inodeTail    common.Inodes
@@ -173,6 +175,17 @@ func (tx *Tx) ForEach(fn func(name []byte, b *Bucket) error) error {
 // OnCommit adds a handler function to be executed after the transaction successfully commits.
 func (tx *Tx) OnCommit(fn func()) {
 	tx.commitHandlers = append(tx.commitHandlers, fn)
+}
+
+// CommitOrdered commits like Commit but only orders the transaction's writes
+// after all earlier writes instead of flushing them to stable storage. A crash
+// can lose this commit and later ones, never an earlier commit, and the
+// database stays consistent. The next Commit or Sync makes it durable.
+//
+// Only darwin distinguishes the two; elsewhere CommitOrdered equals Commit.
+func (tx *Tx) CommitOrdered() error {
+	tx.ordered = true
+	return tx.Commit()
 }
 
 // Commit writes all changes to disk, updates the meta page and closes the transaction.
@@ -669,7 +682,7 @@ func (tx *Tx) write() error {
 	// Ignore file sync if flag is set on DB.
 	if !tx.db.NoSync || common.IgnoreNoSync {
 		// gofail: var beforeSyncDataPages struct{}
-		if err := fdatasync(tx.db); err != nil {
+		if err := tx.sync(); err != nil {
 			lg.Errorf("[GOOS: %s, GOARCH: %s] fdatasync failed: %v", runtime.GOOS, runtime.GOARCH, err)
 			return err
 		}
@@ -695,6 +708,14 @@ func (tx *Tx) write() error {
 	return nil
 }
 
+// sync flushes the transaction's writes, or only orders them for CommitOrdered.
+func (tx *Tx) sync() error {
+	if tx.ordered {
+		return barrierfsync(tx.db)
+	}
+	return fdatasync(tx.db)
+}
+
 // writeMeta writes the meta to the disk.
 func (tx *Tx) writeMeta() error {
 	// gofail: var beforeWriteMetaError string
@@ -716,7 +737,7 @@ func (tx *Tx) writeMeta() error {
 	tx.db.metalock.Unlock()
 	if !tx.db.NoSync || common.IgnoreNoSync {
 		// gofail: var beforeSyncMetaPage struct{}
-		if err := fdatasync(tx.db); err != nil {
+		if err := tx.sync(); err != nil {
 			lg.Errorf("[GOOS: %s, GOARCH: %s] fdatasync failed: %v", runtime.GOOS, runtime.GOARCH, err)
 			return err
 		}

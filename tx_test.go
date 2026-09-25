@@ -90,6 +90,32 @@ func TestTx_Commit_ErrTxClosed(t *testing.T) {
 	}
 }
 
+// Ensure that an ordered commit persists its writes, closes the transaction,
+// and leaves the database consistent for a later full commit.
+func TestTx_CommitOrdered(t *testing.T) {
+	db := btesting.MustCreateDB(t)
+	tx, err := db.Begin(true)
+	require.NoError(t, err)
+	b, err := tx.CreateBucket([]byte("widgets"))
+	require.NoError(t, err)
+	require.NoError(t, b.Put([]byte("foo"), []byte("bar")))
+	require.NoError(t, tx.CommitOrdered())
+	require.ErrorIs(t, tx.Commit(), berrors.ErrTxClosed)
+
+	require.NoError(t, db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("widgets")).Put([]byte("baz"), []byte("bat"))
+	}))
+	db.MustClose()
+	db.MustReopen()
+	db.MustCheck()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("widgets"))
+		assert.Equal(t, []byte("bar"), b.Get([]byte("foo")))
+		assert.Equal(t, []byte("bat"), b.Get([]byte("baz")))
+		return nil
+	}))
+}
+
 // Ensure that rolling back a closed transaction returns an error.
 func TestTx_Rollback_ErrTxClosed(t *testing.T) {
 	db := btesting.MustCreateDB(t)
@@ -1051,6 +1077,28 @@ func TestTx_TruncateBeforeWrite(t *testing.T) {
 			}
 			db.MustClose()
 			db.MustDeleteFile()
+		})
+	}
+}
+
+// Compare the latency of full and ordered commits of one small write.
+func BenchmarkTx_Commit(b *testing.B) {
+	for _, ordered := range []bool{false, true} {
+		b.Run(fmt.Sprintf("ordered=%t", ordered), func(b *testing.B) {
+			db := btesting.MustCreateDB(b)
+			for i := 0; b.Loop(); i++ {
+				tx, err := db.Begin(true)
+				require.NoError(b, err)
+				bk, err := tx.CreateBucketIfNotExists([]byte("widgets"))
+				require.NoError(b, err)
+				require.NoError(b, bk.Put(fmt.Appendf(nil, "%08d", i), []byte("value")))
+				if ordered {
+					err = tx.CommitOrdered()
+				} else {
+					err = tx.Commit()
+				}
+				require.NoError(b, err)
+			}
 		})
 	}
 }

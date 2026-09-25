@@ -224,6 +224,59 @@ func TestDBRestoreReadonlyTxidsToFreelist(t *testing.T) {
 	}
 }
 
+// Ensure that writers after an ordered commit keep the pages it freed until a
+// later barrier orders its meta page, and that a reopened handle orders the
+// file before its first write.
+func TestCommitOrderedKeepsFreedPages(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "db")
+	db, err := Open(path, 0o600, nil)
+	require.NoError(t, err)
+
+	put := func(tx *Tx, value string) {
+		b, err := tx.CreateBucketIfNotExists([]byte("b"))
+		require.NoError(t, err)
+		require.NoError(t, b.Put([]byte("k"), []byte(value)))
+	}
+	tx, err := db.Begin(true)
+	require.NoError(t, err)
+	put(tx, "a")
+	require.NoError(t, tx.Commit())
+
+	tx, err = db.Begin(true)
+	require.NoError(t, err)
+	put(tx, "b")
+	txid := common.Txid(tx.ID())
+	require.NoError(t, tx.CommitOrdered())
+	require.Equal(t, txid, db.unorderedMeta)
+	pending := db.freelist.PendingCount()
+	require.NotZero(t, pending)
+
+	// The previous meta is the recovery point, so its pages stay pending.
+	tx, err = db.Begin(true)
+	require.NoError(t, err)
+	require.Equal(t, pending, db.freelist.PendingCount())
+	put(tx, "c")
+	require.NoError(t, tx.Commit())
+	require.Zero(t, db.unorderedMeta)
+
+	// A full commit orders every meta page, so every freed page is released.
+	tx, err = db.Begin(true)
+	require.NoError(t, err)
+	require.Zero(t, db.freelist.PendingCount())
+	put(tx, "d")
+	require.NoError(t, tx.CommitOrdered())
+	require.NoError(t, db.Close())
+
+	db, err = Open(path, 0o600, nil)
+	require.NoError(t, err)
+	require.True(t, db.adoptedFreelist)
+	tx, err = db.Begin(true)
+	require.NoError(t, err)
+	require.False(t, db.adoptedFreelist)
+	require.NoError(t, tx.Rollback())
+	require.NoError(t, db.Close())
+}
+
 func prepareData(t *testing.T) (string, error) {
 	fileName := filepath.Join(t.TempDir(), "db")
 	db, err := Open(fileName, 0666, nil)

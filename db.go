@@ -152,6 +152,16 @@ type DB struct {
 
 	freelist     fl.Interface
 	freelistLoad sync.Once
+	// unorderedMeta is the txid of the last commit when CommitOrdered left its
+	// meta page unordered, or zero. Until the next barrier orders that page, a
+	// crash may recover the previous meta, so writers keep the pages the commit
+	// freed. Guarded by rwlock.
+	unorderedMeta common.Txid
+	// adoptedFreelist reports that the freelist was read from disk, where an
+	// unordered commit may have recorded as free the pages its previous meta
+	// still references. The next writer orders the file first. Guarded by
+	// rwlock.
+	adoptedFreelist bool
 
 	pagePool sync.Pool
 
@@ -629,6 +639,7 @@ func (db *DB) loadFreelist() {
 			// Read free list from freelist page.
 			db.freelist.Read(db.page(db.meta().Freelist()))
 		}
+		db.adoptedFreelist = true
 		if db.stats != nil {
 			db.statlock.Lock()
 			db.stats.FreePageN = db.freelist.FreeCount()
@@ -658,6 +669,7 @@ func (db *DB) reloadFreelist(meta *common.Meta) error {
 	}
 	db.freelist = newFreelist(db.FreelistType)
 	db.freelist.Read(p)
+	db.adoptedFreelist = true
 	db.restoreReadonlyTxidsToFreelist()
 	db.deferReloadedFreePagesForActiveReaders(meta.Txid())
 	if db.stats != nil {
@@ -1374,6 +1386,18 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	t.init(db)
 	db.rwtx = t
 
+	// Order the file before reusing pages from a freelist read from disk.
+	if db.adoptedFreelist {
+		if err := db.orderWrites(); err != nil {
+			db.rwtx = nil
+			if db.lockFile != nil {
+				_ = db.lockFile.ReleaseWriterLock()
+			}
+			db.rwlock.Unlock()
+			return nil, err
+		}
+	}
+
 	// Query the cross-process oldest reader txid from the lock file.
 	// Add it as a synthetic readonly TXID so the freelist won't reclaim
 	// pages still being read by readers in other processes.
@@ -1383,14 +1407,37 @@ func (db *DB) beginRWTx() (*Tx, error) {
 		db.freelist.AddReadonlyTXID(crossProcessTxid)
 	}
 
+	// A reader at the unordered commit's txid keeps the pages it freed, which
+	// the previous meta, the crash recovery point, still references.
+	unorderedMeta := db.unorderedMeta
+	if unorderedMeta != 0 {
+		db.freelist.AddReadonlyTXID(unorderedMeta)
+	}
+
 	db.freelist.ReleasePendingPages()
 
-	// Remove the synthetic cross-process txid after release is done.
+	// Remove the synthetic txids after release is done.
 	if db.lockFile != nil {
 		db.freelist.RemoveReadonlyTXID(crossProcessTxid)
 	}
+	if unorderedMeta != 0 {
+		db.freelist.RemoveReadonlyTXID(unorderedMeta)
+	}
 
 	return t, nil
+}
+
+// orderWrites orders every earlier write to the file before later ones,
+// making the newest meta page written the crash recovery point.
+func (db *DB) orderWrites() error {
+	if db.file != nil && (!db.NoSync || common.IgnoreNoSync) {
+		if err := barrierfsync(db); err != nil {
+			return err
+		}
+	}
+	db.adoptedFreelist = false
+	db.unorderedMeta = 0
+	return nil
 }
 
 // beforeSingleProcessAccessHook is a test-only seam for aligning concurrent

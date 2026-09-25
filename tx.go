@@ -188,7 +188,10 @@ func (tx *Tx) OnCommit(fn func()) {
 // can lose this commit and later ones, never an earlier commit, and the
 // database stays consistent. The next Commit or Sync makes it durable.
 //
-// Only darwin distinguishes the two; elsewhere CommitOrdered equals Commit.
+// The data pages are ordered before the meta page, which is left for the next
+// commit's barrier to order. Until then the next writers keep the pages this
+// commit freed, which the previous meta still references. Only darwin orders
+// without flushing; elsewhere the data pages are flushed.
 func (tx *Tx) CommitOrdered() error {
 	tx.ordered = true
 	return tx.Commit()
@@ -337,6 +340,10 @@ func (tx *Tx) Commit() (err error) {
 		return err
 	}
 	tx.db.lastKnownTxid = uint64(tx.meta.Txid())
+	tx.db.unorderedMeta = 0
+	if tx.defersMetaSync() {
+		tx.db.unorderedMeta = tx.meta.Txid()
+	}
 	tx.stats.IncWriteTime(time.Since(startTime))
 
 	// Increment the commit counter so cross-process observers can detect
@@ -711,6 +718,12 @@ func (tx *Tx) sync() error {
 	return tx.db.sync()
 }
 
+// defersMetaSync reports whether the commit leaves its meta page for the next
+// barrier to order: an ordered commit to a file that syncs.
+func (tx *Tx) defersMetaSync() bool {
+	return tx.ordered && tx.db.file != nil && (!tx.db.NoSync || common.IgnoreNoSync)
+}
+
 // writeMeta writes the meta to the disk.
 func (tx *Tx) writeMeta() error {
 	// gofail: var beforeWriteMetaError string
@@ -730,7 +743,7 @@ func (tx *Tx) writeMeta() error {
 		return err
 	}
 	tx.db.metalock.Unlock()
-	if !tx.db.NoSync || common.IgnoreNoSync {
+	if (!tx.db.NoSync || common.IgnoreNoSync) && !tx.defersMetaSync() {
 		// gofail: var beforeSyncMetaPage struct{}
 		if err := tx.sync(); err != nil {
 			lg.Errorf("[GOOS: %s, GOARCH: %s] fdatasync failed: %v", runtime.GOOS, runtime.GOARCH, err)

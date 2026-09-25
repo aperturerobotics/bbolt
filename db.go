@@ -1151,22 +1151,12 @@ func (db *DB) remapForCoordinationLock() error {
 	return nil
 }
 
-func (db *DB) validatePath() error {
-	return db.ValidatePath()
-}
-
 func (db *DB) closeIfPathChanged(err error) {
 	if db == nil {
 		return
 	}
 	if errors.Is(err, berrors.ErrLockFileChanged) {
 		_ = db.Close()
-	}
-}
-
-func (db *DB) panicIfLockFileChanged() {
-	if err := db.validatePath(); err != nil {
-		panic(lockFileChangedPanic{err: err})
 	}
 }
 
@@ -1240,11 +1230,6 @@ func (db *DB) oldestReadonlyTxid() (common.Txid, bool) {
 }
 
 func (db *DB) beginTx() (*Tx, error) {
-	if err := db.validatePath(); err != nil {
-		db.closeIfPathChanged(err)
-		return nil, err
-	}
-
 	// Check if another process needs us to escalate from single to multi mode.
 	db.checkEscalation()
 
@@ -1320,7 +1305,10 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	if db.readOnly {
 		return nil, berrors.ErrDatabaseReadOnly
 	}
-	if err := db.validateLockFile(); err != nil {
+	// Refuse to begin writing to a database or lock file that has been removed
+	// or replaced. Readers skip this check: an open file still reads correctly.
+	if err := db.ValidatePath(); err != nil {
+		db.closeIfPathChanged(err)
 		return nil, err
 	}
 

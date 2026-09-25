@@ -47,9 +47,9 @@ func TestDBBeginFailsWhenLockFileChanged(t *testing.T) {
 		t.Fatalf("write replacement lock file: %v", err)
 	}
 
-	_, err := db.Begin(false)
+	_, err := db.Begin(true)
 	if !errors.Is(err, berrors.ErrLockFileChanged) {
-		t.Fatalf("Begin(false) error = %v, want %v", err, berrors.ErrLockFileChanged)
+		t.Fatalf("Begin(true) error = %v, want %v", err, berrors.ErrLockFileChanged)
 	}
 
 	_, err = db.Begin(true)
@@ -68,9 +68,9 @@ func TestDBBeginClosesWhenDatabaseFileRemoved(t *testing.T) {
 		t.Fatalf("remove db file path: %v", err)
 	}
 
-	_, err := db.Begin(false)
+	_, err := db.Begin(true)
 	if !errors.Is(err, berrors.ErrLockFileChanged) {
-		t.Fatalf("Begin(false) error = %v, want %v", err, berrors.ErrLockFileChanged)
+		t.Fatalf("Begin(true) error = %v, want %v", err, berrors.ErrLockFileChanged)
 	}
 	if db.opened {
 		t.Fatal("expected database to close after db file path removal")

@@ -53,14 +53,6 @@ type Tx struct {
 	WriteFlag int
 }
 
-type lockFileChangedPanic struct {
-	err error
-}
-
-func (p lockFileChangedPanic) Error() string {
-	return p.err.Error()
-}
-
 // mapped returns a page from the mapping the transaction reads.
 func (tx *Tx) mapped(id common.Pgid) *common.Page {
 	if tx.data == nil {
@@ -222,21 +214,7 @@ func (tx *Tx) Commit() (err error) {
 
 	defer func() {
 		if p := recover(); p != nil {
-			switch v := p.(type) {
-			case lockFileChangedPanic:
-				db := tx.db
-				_ = tx.rollbackSafely()
-				db.closeIfPathChanged(v.err)
-				err = v.err
-				return
-			case *lockFileChangedPanic:
-				db := tx.db
-				_ = tx.rollbackSafely()
-				db.closeIfPathChanged(v.err)
-				err = v.err
-				return
-			}
-			if lockErr := tx.db.validatePath(); errors.Is(lockErr, berrors.ErrLockFileChanged) {
+			if lockErr := tx.db.ValidatePath(); errors.Is(lockErr, berrors.ErrLockFileChanged) {
 				db := tx.db
 				_ = tx.rollbackSafely()
 				db.closeIfPathChanged(lockErr)
@@ -261,17 +239,10 @@ func (tx *Tx) Commit() (err error) {
 	} else if !tx.writable {
 		return berrors.ErrTxNotWritable
 	}
-	if err = tx.db.validatePath(); err != nil {
-		db := tx.db
-		tx.rollback()
-		db.closeIfPathChanged(err)
-		return err
-	}
 	if tx.db.ops.beforeCommitPhase != nil {
 		tx.db.ops.beforeCommitPhase("before-rebalance")
 	}
 	commitPhase = true
-	tx.db.panicIfLockFileChanged()
 
 	// Rebalance nodes which have had deletions.
 	var startTime = time.Now()
@@ -284,7 +255,6 @@ func (tx *Tx) Commit() (err error) {
 	if tx.db.ops.beforeCommitPhase != nil {
 		tx.db.ops.beforeCommitPhase("before-spill")
 	}
-	tx.db.panicIfLockFileChanged()
 
 	// spill data onto dirty pages.
 	startTime = time.Now()
@@ -300,7 +270,6 @@ func (tx *Tx) Commit() (err error) {
 
 	// Free the old freelist because commit writes out a fresh freelist.
 	if tx.meta.Freelist() != common.PgidNoFreelist {
-		tx.db.panicIfLockFileChanged()
 		tx.db.freelist.Free(tx.meta.Txid(), tx.db.page(tx.meta.Freelist()))
 	}
 
@@ -312,6 +281,16 @@ func (tx *Tx) Commit() (err error) {
 		}
 	} else {
 		tx.meta.SetFreelist(common.PgidNoFreelist)
+	}
+
+	// Refuse to write into a database file that has been removed or replaced.
+	// This is the commit's only check: before it nothing touches the file, and
+	// a panic from state read out of a replaced file is converted above.
+	if err = tx.db.ValidatePath(); err != nil {
+		db := tx.db
+		tx.rollback()
+		db.closeIfPathChanged(err)
+		return err
 	}
 
 	// If the high water mark has moved up then attempt to grow the database.

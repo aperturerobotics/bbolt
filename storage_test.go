@@ -136,3 +136,45 @@ func TestOpenStorage(t *testing.T) {
 	})
 	require.NoError(t, err)
 }
+
+// TestOpenStorageReaderDuringRemap checks that a read transaction on a Storage
+// does not block a commit that grows the heap buffer, and keeps reading the
+// snapshot it began with.
+func TestOpenStorageReaderDuringRemap(t *testing.T) {
+	db, err := bolt.OpenStorage(&memStorage{}, nil)
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Commit one key and hold a reader over it.
+	err = db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucket([]byte("b"))
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte("first"), []byte("1"))
+	})
+	require.NoError(t, err)
+	rtx, err := db.Begin(false)
+	require.NoError(t, err)
+	defer rtx.Rollback()
+
+	// Grow the database on the same goroutine; a reader holding the mmap
+	// lock would deadlock here.
+	value := bytes.Repeat([]byte{'v'}, 4096)
+	err = db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("b"))
+		for i := range 2000 {
+			if err := b.Put(fmt.Appendf(nil, "k%05d", i), value); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+
+	// The reader still sees only its snapshot.
+	b := rtx.Bucket([]byte("b"))
+	require.Equal(t, []byte("1"), b.Get([]byte("first")))
+	require.Nil(t, b.Get([]byte("k00000")))
+	require.Equal(t, 1, b.Stats().KeyN)
+}

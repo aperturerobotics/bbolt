@@ -38,6 +38,11 @@ type Tx struct {
 	// inodeBuffers owns all pooled mutable page entries until this tx closes.
 	inodeBuffers []*inodeBuffer
 	inodeTail    common.Inodes
+	// data is the heap buffer a read transaction on a Storage pins. A remap
+	// swaps the database's buffer without waiting for the transaction, so it
+	// keeps reading the buffer that was current when it began. Nil when the
+	// transaction reads the database's current mapping.
+	data *[common.MaxMapSize]byte
 
 	// WriteFlag specifies the flag for write-related methods like WriteTo().
 	// Tx opens the database file with the specified flag to copy the data.
@@ -54,6 +59,15 @@ type lockFileChangedPanic struct {
 
 func (p lockFileChangedPanic) Error() string {
 	return p.err.Error()
+}
+
+// mapped returns a page from the mapping the transaction reads.
+func (tx *Tx) mapped(id common.Pgid) *common.Page {
+	if tx.data == nil {
+		return tx.db.page(id)
+	}
+	pos := id * common.Pgid(tx.db.pageSize)
+	return (*common.Page)(unsafe.Pointer(&tx.data[pos]))
 }
 
 // init initializes the transaction.
@@ -489,6 +503,7 @@ func (tx *Tx) close() {
 	tx.meta = nil
 	tx.root = Bucket{tx: tx}
 	tx.pages = nil
+	tx.data = nil
 }
 
 // Copy writes the entire database to a writer.
@@ -761,8 +776,8 @@ func (tx *Tx) page(id common.Pgid) *common.Page {
 		}
 	}
 
-	// Otherwise return directly from the mmap.
-	p := tx.db.page(id)
+	// Otherwise return directly from the mapping.
+	p := tx.mapped(id)
 	p.FastCheck(id)
 	return p
 }
@@ -803,7 +818,7 @@ func (tx *Tx) Page(id int) (*common.PageInfo, error) {
 	}
 
 	// Build the page info.
-	p := tx.db.page(common.Pgid(id))
+	p := tx.mapped(common.Pgid(id))
 	info := &common.PageInfo{
 		ID:            id,
 		Count:         int(p.Count()),

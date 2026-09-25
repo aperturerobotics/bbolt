@@ -386,8 +386,9 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 
 // OpenStorage opens a database on s, initializing it when s is empty. The DB
 // reads s into a heap buffer in place of a memory map, takes no file or
-// cross-process locks, and must be the only opener of s. Close closes s.
-// The OpenFile, MmapFlags, Mlock, and Timeout options do not apply.
+// cross-process locks, and must be the only opener of s. A read transaction
+// pins the heap buffer it began on, so neither a commit that grows the buffer
+// nor Close waits for open readers. Close closes s. The OpenFile, MmapFlags, Mlock, and Timeout options do not apply.
 func OpenStorage(s Storage, options *Options) (*DB, error) {
 	db, options := newDB(options)
 	db.storage = s
@@ -1288,9 +1289,15 @@ func (db *DB) beginTx() (*Tx, error) {
 		}
 	}
 
-	// Create a transaction associated with the database.
+	// Create a transaction associated with the database. A transaction on a
+	// Storage pins the heap buffer instead of holding the mmap lock, so a
+	// commit that grows the buffer never waits for open readers.
 	t := &Tx{}
 	t.init(db)
+	if db.file == nil {
+		t.data = db.data
+		db.mmaplock.RUnlock()
+	}
 
 	db.addReadonlyTxid(t.meta.Txid())
 
@@ -1584,8 +1591,11 @@ func (db *DB) deferReloadedFreePagesForActiveReaders(metaTxid common.Txid) {
 
 // removeTx removes a transaction from the database.
 func (db *DB) removeTx(tx *Tx) {
-	// Release the read lock on the mmap.
-	db.mmaplock.RUnlock()
+	// Release the read lock on the mmap unless the transaction pinned a
+	// heap buffer instead.
+	if tx.data == nil {
+		db.mmaplock.RUnlock()
+	}
 
 	// Use the meta lock to restrict access to the DB object.
 	db.metalock.Lock()

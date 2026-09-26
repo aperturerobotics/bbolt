@@ -1843,11 +1843,20 @@ func safelyCall(fn func(*Tx) error, tx *Tx) (err error) {
 }
 
 // Sync executes fdatasync() against the database file handle, or Sync on the
-// Storage.
+// Storage. It returns ErrDatabaseNotOpen once the database has closed,
+// including when it closed itself after its file paths changed.
 //
 // This is not necessary under normal operation, however, if you use NoSync
 // then it allows you to force the database file to sync against the disk.
 func (db *DB) Sync() (err error) {
+	// Hold the mmap read lock as a reader does, so Close waits for the flush
+	// and the file handle stays open through it.
+	db.mmaplock.RLock()
+	defer db.mmaplock.RUnlock()
+	if !db.opened {
+		return berrors.ErrDatabaseNotOpen
+	}
+
 	if lg := db.Logger(); lg != discardLogger {
 		lg.Debugf("Syncing bbolt db (%s)", db.path)
 		defer func() {

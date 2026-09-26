@@ -56,6 +56,11 @@ func TestDBBeginFailsWhenLockFileChanged(t *testing.T) {
 	if !errors.Is(err, berrors.ErrDatabaseNotOpen) {
 		t.Fatalf("Begin(true) error = %v, want %v", err, berrors.ErrDatabaseNotOpen)
 	}
+
+	err = db.Sync()
+	if !errors.Is(err, berrors.ErrDatabaseNotOpen) {
+		t.Fatalf("Sync() error = %v, want %v", err, berrors.ErrDatabaseNotOpen)
+	}
 }
 
 func TestDBBeginClosesWhenDatabaseFileRemoved(t *testing.T) {

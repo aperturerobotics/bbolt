@@ -308,3 +308,30 @@ func TestOldestReaderTxidClearsStale(t *testing.T) {
 		t.Errorf("stale slot pid = %d after OldestReaderTxid, want 0", pid)
 	}
 }
+
+// A container restart reuses the pid of the process that died holding a slot.
+func TestOldestReaderTxidClearsReusedPid(t *testing.T) {
+	if selfStart() == 0 {
+		t.Skip("platform reports no process start time")
+	}
+	lf := openTestLockFileN(t, 8)
+
+	// A dead process with this process's pid left a reader at txid 5.
+	atomic.StoreUint32(lf.slotPidPtr(0), uint32(os.Getpid()))
+	atomic.StoreUint64(lf.slotStartPtr(0), selfStart()+1)
+	atomic.StoreUint64(lf.slotTxidPtr(0), 5)
+
+	slot, _ := lf.AcquireReaderSlot()
+	lf.SetSlotTxid(slot, 50)
+	defer lf.ReleaseReaderSlot(slot)
+
+	if got := lf.OldestReaderTxid(100); got != 50 {
+		t.Errorf("OldestReaderTxid = %d, want 50 (reused pid slot should be cleared)", got)
+	}
+	if pid := atomic.LoadUint32(lf.slotPidPtr(0)); pid != 0 {
+		t.Errorf("reused pid slot pid = %d, want 0", pid)
+	}
+	if pid := atomic.LoadUint32(lf.slotPidPtr(slot)); pid == 0 {
+		t.Error("live slot was cleared")
+	}
+}

@@ -1144,22 +1144,17 @@ func (db *DB) RefreshForCoordinationLock() error {
 	return nil
 }
 
-// remapForCoordinationLock forces this handle to observe the latest on-disk
-// meta pages and freelist after another process may have committed. It is used
-// at higher-level coordination boundaries that build mutable state before the
-// first short bbolt write transaction.
+// remapForCoordinationLock adopts the commits other processes made since this
+// handle last observed the file, remapping only when the file grew past the
+// mapping. Without an external commit the handle is already current. Reloading
+// the freelist then would defer every free page behind any reader older than
+// the newest commit, so each refresh would push the next allocations to the
+// end of the file, and an unconditional remap would wait for every reader.
 func (db *DB) remapForCoordinationLock() error {
-	if !db.hasSyncedFreelist() {
-		return errors.New("bbolt: NoFreelistSync is not compatible with multi-process concurrent access; disable NoFreelistSync or use single-process mode")
-	}
-	if err := db.mmap(0); err != nil {
-		return fmt.Errorf("bbolt: remap for coordination refresh: %w", err)
-	}
-	meta := db.meta()
-	if err := db.reloadFreelist(meta); err != nil {
+	if err := db.refreshForWriter(); err != nil {
 		return err
 	}
-	db.lastKnownTxid = uint64(meta.Txid())
+	db.lastKnownTxid = uint64(db.meta().Txid())
 	return nil
 }
 

@@ -1693,6 +1693,63 @@ func TestDB_HugeValue(t *testing.T) {
 	})
 }
 
+// Ensure a coordination refresh without a commit from another process keeps
+// the free pages allocatable behind a reader older than the newest commit.
+func TestDB_CoordinationRefreshKeepsFreePages(t *testing.T) {
+	// A commit cannot remap the file under an open reader, so map it all up
+	// front.
+	db := btesting.MustCreateDBWithOption(t, &bolt.Options{NoSync: true, InitialMmapSize: 1 << 30})
+	put := func(tx *bolt.Tx) error {
+		bucket, err := tx.CreateBucketIfNotExists([]byte("data"))
+		if err != nil {
+			return err
+		}
+		for i := range 64 {
+			if err := bucket.Put(binary.BigEndian.AppendUint64(nil, uint64(i)), make([]byte, 64<<10)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	size := func() int64 {
+		var size int64
+		require.NoError(t, db.View(func(tx *bolt.Tx) error {
+			size = tx.Size()
+			return nil
+		}))
+		return size
+	}
+
+	// Write the values, delete them, and commit once more so their pages
+	// become free.
+	require.NoError(t, db.Update(put))
+	require.NoError(t, db.Update(func(tx *bolt.Tx) error {
+		return tx.DeleteBucket([]byte("data"))
+	}))
+	require.NoError(t, db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucket([]byte("marker"))
+		return err
+	}))
+
+	// Hold a reader, then commit so the reader is older than the meta.
+	reader, err := db.Begin(false)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, reader.Rollback())
+	}()
+	require.NoError(t, db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("marker")).Put([]byte("key"), []byte("value"))
+	}))
+
+	// Writing the values again after a refresh reuses the freed pages.
+	before := size()
+	require.NoError(t, db.RefreshForCoordinationLock())
+	require.NoError(t, db.Update(put))
+	if grown := size() - before; grown > 1<<20 {
+		t.Fatalf("file grew by %d bytes rewriting 4 MiB into free pages", grown)
+	}
+}
+
 // Ensure commits behind a long read transaction grow the file by the pages
 // they write. Each commit frees the previous freelist page run, and the next
 // freelist page must count that run as one span instead of one per page.

@@ -10,11 +10,25 @@ import (
 // to serialize with transaction completion and statistics readers.
 func TestCoordinationRefreshSerializesStatistics(t *testing.T) {
 	// Open the multi-process database mode used by coordinated World storage.
-	db, err := Open(filepath.Join(t.TempDir(), "stats.db"), 0o600, nil)
+	path := filepath.Join(t.TempDir(), "stats.db")
+	db, err := Open(path, 0o600, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
+
+	// Commit through a second handle so the refresh reloads the freelist.
+	other, err := Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if err := other.Update(func(tx *Tx) error {
+		_, err := tx.CreateBucket([]byte("data"))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	// A held statistics lock must prevent the refresh from publishing its count.
 	db.statlock.Lock()

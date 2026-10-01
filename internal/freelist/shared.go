@@ -295,9 +295,12 @@ func (t *shared) Read(p *common.Page) {
 	t.initSpans(p.FreelistPageSpans())
 }
 
+// EstimatedWritePageSize returns the size of the page Write stores once the
+// commit has allocated that page. The allocation takes pages from the start of
+// a free span, which can split one merged free and pending span in two, so the
+// estimate allows one span more than the freelist holds now.
 func (t *shared) EstimatedWritePageSize() int {
-	// Every pending page adds at most one span.
-	return common.FreelistPageSize(t.freeSpanCount() + t.PendingCount())
+	return common.FreelistPageSize(len(t.writeSpans()) + 1)
 }
 
 // Write stores the free and pending pages as one sorted list of spans.
@@ -305,6 +308,13 @@ func (t *shared) EstimatedWritePageSize() int {
 // them, and a process that reloads the page defers free pages for its own
 // active readers.
 func (t *shared) Write(p *common.Page) {
+	p.WriteFreelistPage(t.writeSpans())
+}
+
+// writeSpans returns the free and pending pages merged into one sorted list
+// of spans. A pending run freed from one multi-page allocation becomes one
+// span.
+func (t *shared) writeSpans() []common.FreelistSpan {
 	free := t.freeSpans()
 	pending := t.sortedPendingIds()
 	spans := make([]common.FreelistSpan, 0, len(free)+len(pending))
@@ -318,7 +328,7 @@ func (t *shared) Write(p *common.Page) {
 	for _, id := range pending[next:] {
 		spans = appendSpan(spans, common.FreelistSpan{Start: id, Len: 1})
 	}
-	p.WriteFreelistPage(spans)
+	return spans
 }
 
 // appendSpan appends span to spans, extending the last span when span

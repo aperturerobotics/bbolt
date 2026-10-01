@@ -1693,6 +1693,42 @@ func TestDB_HugeValue(t *testing.T) {
 	})
 }
 
+// Ensure commits behind a long read transaction grow the file by the pages
+// they write. Each commit frees the previous freelist page run, and the next
+// freelist page must count that run as one span instead of one per page.
+func TestDB_LongReaderGrowth(t *testing.T) {
+	// A commit cannot remap the file under an open reader, so map it all up
+	// front.
+	db := btesting.MustCreateDBWithOption(t, &bolt.Options{NoSync: true, InitialMmapSize: 1 << 30})
+	require.NoError(t, db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucket([]byte("data"))
+		return err
+	}))
+
+	// Hold a read transaction so pending pages stay pending.
+	reader, err := db.Begin(false)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, reader.Rollback())
+	}()
+
+	// Rewrite one key in many small commits.
+	const commits = 2000
+	for i := range commits {
+		require.NoError(t, db.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket([]byte("data")).Put([]byte("key"), binary.BigEndian.AppendUint64(nil, uint64(i)))
+		}))
+	}
+
+	// A commit writes a leaf and a small freelist page.
+	var size int64
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		size = tx.Size()
+		return nil
+	}))
+	require.Less(t, size, int64(3*commits*db.Info().PageSize))
+}
+
 func ExampleDB_Update() {
 	// Open the database.
 	db, err := bolt.Open(tempfile(), 0600, nil)

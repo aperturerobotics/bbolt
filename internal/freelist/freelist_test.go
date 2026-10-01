@@ -501,10 +501,11 @@ func TestFreelist_E2E_SerDe_HappyPath(t *testing.T) {
 	freelist.Free(common.Txid(3), common.NewPage(10, common.LeafPageFlag, 0, 2))
 	requirePages(t, freelist, common.Pgids{5, 6, 8}, common.Pgids{3, 4, 10, 11, 12})
 
-	// Two free spans and five pending pages bound the page at seven spans.
+	// The pages merge into three spans, and allocating the freelist page may
+	// split one more.
 	buf := make([]byte, 4096)
 	p := common.LoadPage(buf)
-	require.Equal(t, common.FreelistPageSize(7), freelist.EstimatedWritePageSize())
+	require.Equal(t, common.FreelistPageSize(4), freelist.EstimatedWritePageSize())
 	freelist.Write(p)
 	require.Equal(t, []common.FreelistSpan{{Start: 3, Len: 4}, {Start: 8, Len: 1}, {Start: 10, Len: 3}}, p.FreelistPageSpans())
 

@@ -2018,6 +2018,27 @@ func (db *DB) grow(sz int) error {
 	return nil
 }
 
+// shrink truncates the database file to sz plus one allocation step once it
+// exceeds that by more than another step, so growth and shrinking do not
+// alternate. The caller holds the writer lock and has written a meta page
+// whose high water mark fits in sz. The pages past it are free: no meta page
+// that a reader or crash recovery can use references them. Mappings may stay
+// larger than the file, since nothing reads those pages.
+func (db *DB) shrink(sz int) error {
+	if db.file == nil || db.Mlock || runtime.GOOS == "windows" {
+		return nil
+	}
+	fileSize, err := db.fileSize()
+	if err != nil {
+		return err
+	}
+	target := sz + db.AllocSize
+	if fileSize-target <= db.AllocSize {
+		return nil
+	}
+	return db.storage.Truncate(int64(target))
+}
+
 func (db *DB) IsReadOnly() bool {
 	return db.readOnly
 }

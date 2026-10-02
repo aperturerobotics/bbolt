@@ -629,19 +629,28 @@ func TestOpen_RecoverFreeList(t *testing.T) {
 	}
 	db.MustClose()
 
-	// Record freelist count from opening with NoFreelistSync.
+	// Record freelist count and file size from opening with NoFreelistSync.
+	pages := func() int {
+		var n int
+		require.NoError(t, db.View(func(tx *bolt.Tx) error {
+			n = int(tx.Size()) / db.Info().PageSize
+			return nil
+		}))
+		return n
+	}
 	db.MustReopen()
-	freepages := db.Stats().FreePageN
+	freepages, before := db.Stats().FreePageN, pages()
 	if freepages == 0 {
 		t.Fatalf("no free pages on NoFreelistSync reopen")
 	}
 	db.MustClose()
 
 	// Check free page count is reconstructed when opened with freelist sync.
+	// Syncing the free list on open takes one free page and returns the free
+	// pages at the end of the file to the file system.
 	db.SetOptions(&bolt.Options{})
 	db.MustReopen()
-	// One less free page for syncing the free list on open.
-	freepages--
+	freepages -= 1 + before - pages()
 	if fp := db.Stats().FreePageN; fp < freepages {
 		t.Fatalf("closed with %d free pages, opened with %d", freepages, fp)
 	}
@@ -1720,9 +1729,16 @@ func TestDB_CoordinationRefreshKeepsFreePages(t *testing.T) {
 		return size
 	}
 
-	// Write the values, delete them, and commit once more so their pages
-	// become free.
+	// Write the values and a value after them that keeps their pages inside
+	// the file, delete them, and commit once more so their pages become free.
 	require.NoError(t, db.Update(put))
+	require.NoError(t, db.Update(func(tx *bolt.Tx) error {
+		bucket, err := tx.CreateBucket([]byte("tail"))
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte("key"), make([]byte, 64<<10))
+	}))
 	require.NoError(t, db.Update(func(tx *bolt.Tx) error {
 		return tx.DeleteBucket([]byte("data"))
 	}))

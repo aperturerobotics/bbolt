@@ -27,6 +27,11 @@ type Interface interface {
 	// available; otherwise, it returns 0.
 	Allocate(txid common.Txid, numPages int) common.Pgid
 
+	// TrimTail removes the free pages that run up to the high water mark pgid
+	// and returns the new high water mark. It returns pgid when page pgid-1 is
+	// not free.
+	TrimTail(pgid common.Pgid) common.Pgid
+
 	// Count returns the number of free and pending pages.
 	Count() int
 

@@ -46,9 +46,6 @@ func TestFreelistHashmap_allocate(t *testing.T) {
 }
 
 func TestFreelistHashmap_mergeWithExist(t *testing.T) {
-	bm1 := pidSet{1: struct{}{}}
-
-	bm2 := pidSet{5: struct{}{}}
 	tests := []struct {
 		name            string
 		ids             common.Pgids
@@ -56,7 +53,7 @@ func TestFreelistHashmap_mergeWithExist(t *testing.T) {
 		want            common.Pgids
 		wantForwardmap  map[common.Pgid]uint64
 		wantBackwardmap map[common.Pgid]uint64
-		wantfreemap     map[uint64]pidSet
+		wantSpans       []common.FreelistSpan
 	}{
 		{
 			name:            "test1",
@@ -65,7 +62,7 @@ func TestFreelistHashmap_mergeWithExist(t *testing.T) {
 			want:            []common.Pgid{1, 2, 3, 4, 5, 6},
 			wantForwardmap:  map[common.Pgid]uint64{1: 6},
 			wantBackwardmap: map[common.Pgid]uint64{6: 6},
-			wantfreemap:     map[uint64]pidSet{6: bm1},
+			wantSpans:       []common.FreelistSpan{{Start: 1, Len: 6}},
 		},
 		{
 			name:            "test2",
@@ -74,7 +71,7 @@ func TestFreelistHashmap_mergeWithExist(t *testing.T) {
 			want:            []common.Pgid{1, 2, 3, 5, 6},
 			wantForwardmap:  map[common.Pgid]uint64{1: 3, 5: 2},
 			wantBackwardmap: map[common.Pgid]uint64{6: 2, 3: 3},
-			wantfreemap:     map[uint64]pidSet{3: bm1, 2: bm2},
+			wantSpans:       []common.FreelistSpan{{Start: 1, Len: 3}, {Start: 5, Len: 2}},
 		},
 		{
 			name:            "test3",
@@ -83,7 +80,7 @@ func TestFreelistHashmap_mergeWithExist(t *testing.T) {
 			want:            []common.Pgid{1, 2, 3},
 			wantForwardmap:  map[common.Pgid]uint64{1: 3},
 			wantBackwardmap: map[common.Pgid]uint64{3: 3},
-			wantfreemap:     map[uint64]pidSet{3: bm1},
+			wantSpans:       []common.FreelistSpan{{Start: 1, Len: 3}},
 		},
 		{
 			name:            "test4",
@@ -92,7 +89,7 @@ func TestFreelistHashmap_mergeWithExist(t *testing.T) {
 			want:            []common.Pgid{1, 2, 3},
 			wantForwardmap:  map[common.Pgid]uint64{1: 3},
 			wantBackwardmap: map[common.Pgid]uint64{3: 3},
-			wantfreemap:     map[uint64]pidSet{3: bm1},
+			wantSpans:       []common.FreelistSpan{{Start: 1, Len: 3}},
 		},
 	}
 	for _, tt := range tests {
@@ -110,8 +107,8 @@ func TestFreelistHashmap_mergeWithExist(t *testing.T) {
 		if got := f.backwardMap; !reflect.DeepEqual(tt.wantBackwardmap, got) {
 			t.Fatalf("name %s; exp=%v; got=%v", tt.name, tt.wantBackwardmap, got)
 		}
-		if got := f.freemaps; !reflect.DeepEqual(tt.wantfreemap, got) {
-			t.Fatalf("name %s; exp=%v; got=%v", tt.name, tt.wantfreemap, got)
+		if got := f.freeSpans(); !reflect.DeepEqual(tt.wantSpans, got) {
+			t.Fatalf("name %s; exp=%v; got=%v", tt.name, tt.wantSpans, got)
 		}
 	}
 }
@@ -119,18 +116,19 @@ func TestFreelistHashmap_mergeWithExist(t *testing.T) {
 func TestFreelistHashmap_GetFreePageIDs(t *testing.T) {
 	f := newTestHashMapFreelist()
 
-	N := int32(100000)
-	fm := make(map[common.Pgid]uint64)
-	i := int32(0)
-	val := int32(0)
-	for i = 0; i < N; {
-		val = rand.Int31n(1000)
-		fm[common.Pgid(i)] = uint64(val)
-		i += val
-		f.freePagesCount += uint64(val)
+	// Add separated spans of random sizes in random order.
+	var starts []common.Pgid
+	sizes := make(map[common.Pgid]uint64)
+	for i := common.Pgid(2); i < 100000; {
+		size := uint64(1 + rand.Int31n(999))
+		starts = append(starts, i)
+		sizes[i] = size
+		i += common.Pgid(size) + 1
 	}
-
-	f.forwardMap = fm
+	rand.Shuffle(len(starts), func(i, j int) { starts[i], starts[j] = starts[j], starts[i] })
+	for _, start := range starts {
+		f.addSpan(start, sizes[start])
+	}
 	res := f.freePageIds()
 
 	if !sort.SliceIsSorted(res, func(i, j int) bool { return res[i] < res[j] }) {

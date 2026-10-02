@@ -1,23 +1,20 @@
 package freelist
 
 import (
-	"cmp"
 	"fmt"
 	"reflect"
-	"slices"
 	"sort"
 
 	"github.com/aperturerobotics/bbolt/internal/common"
 )
 
-// pidSet holds the set of starting pgids which have the same span size
-type pidSet map[common.Pgid]struct{}
-
+// hashMap indexes free spans by their first and last page for merging, and
+// orders them in a spanTree for lowest-first allocation.
 type hashMap struct {
 	*shared
 
-	freePagesCount uint64                 // count of free pages(hashmap version)
-	freemaps       map[uint64]pidSet      // key is the size of continuous pages(span), value is a set which contains the starting pgids of same size
+	freePagesCount uint64                 // count of free pages
+	spans          spanTree               // free spans ordered by start page
 	forwardMap     map[common.Pgid]uint64 // key is start pgid, value is its span size
 	backwardMap    map[common.Pgid]uint64 // key is end pgid, value is its span size
 }
@@ -31,7 +28,7 @@ func (f *hashMap) Init(pgids common.Pgids) {
 
 func (f *hashMap) initSpans(spans []common.FreelistSpan) {
 	f.freePagesCount = 0
-	f.freemaps = make(map[uint64]pidSet)
+	f.spans = spanTree{}
 	f.forwardMap = make(map[common.Pgid]uint64, len(spans))
 	f.backwardMap = make(map[common.Pgid]uint64, len(spans))
 	for _, span := range spans {
@@ -40,51 +37,43 @@ func (f *hashMap) initSpans(spans []common.FreelistSpan) {
 	f.reindex()
 }
 
+// Allocate takes n contiguous pages from the start of the lowest free span
+// that holds them.
 func (f *hashMap) Allocate(txid common.Txid, n int) common.Pgid {
 	if n == 0 {
 		return 0
 	}
-
-	// if we have a exact size match just return short path
-	if bm, ok := f.freemaps[uint64(n)]; ok {
-		for pid := range bm {
-			// remove the span
-			f.delSpan(pid, uint64(n))
-
-			f.allocs[pid] = txid
-
-			for i := common.Pgid(0); i < common.Pgid(n); i++ {
-				delete(f.cache, pid+i)
-			}
-			return pid
-		}
+	span := f.spans.lowestFit(uint64(n))
+	if span == nil {
+		return 0
 	}
 
-	// lookup the map to find larger span
-	for size, bm := range f.freemaps {
-		if size < uint64(n) {
-			continue
-		}
-
-		for pid := range bm {
-			// remove the initial
-			f.delSpan(pid, size)
-
-			f.allocs[pid] = txid
-
-			remain := size - uint64(n)
-
-			// add remain span
-			f.addSpan(pid+common.Pgid(n), remain)
-
-			for i := common.Pgid(0); i < common.Pgid(n); i++ {
-				delete(f.cache, pid+i)
-			}
-			return pid
-		}
+	// Take the pages and return the rest of the span to the freelist.
+	pid, size := span.start, span.size
+	f.delSpan(pid, size)
+	if remain := size - uint64(n); remain != 0 {
+		f.addSpan(pid+common.Pgid(n), remain)
 	}
+	f.allocs[pid] = txid
+	for i := common.Pgid(0); i < common.Pgid(n); i++ {
+		delete(f.cache, pid+i)
+	}
+	return pid
+}
 
-	return 0
+// TrimTail removes the free span ending at page pgid-1 and returns its start,
+// or returns pgid when that page is not free.
+func (f *hashMap) TrimTail(pgid common.Pgid) common.Pgid {
+	size, ok := f.backwardMap[pgid-1]
+	if !ok {
+		return pgid
+	}
+	start := pgid - common.Pgid(size)
+	f.delSpan(start, size)
+	for id := start; id < pgid; id++ {
+		delete(f.cache, id)
+	}
+	return start
 }
 
 func (f *hashMap) FreeCount() int {
@@ -102,11 +91,8 @@ func (f *hashMap) freePageIds() common.Pgids {
 
 func (f *hashMap) freeSpans() []common.FreelistSpan {
 	spans := make([]common.FreelistSpan, 0, len(f.forwardMap))
-	for start, size := range f.forwardMap {
+	f.spans.walk(func(start common.Pgid, size uint64) {
 		spans = append(spans, common.FreelistSpan{Start: start, Len: size})
-	}
-	slices.SortFunc(spans, func(a, b common.FreelistSpan) int {
-		return cmp.Compare(a.Start, b.Start)
 	})
 	return spans
 }
@@ -126,35 +112,28 @@ func (f *hashMap) hashmapFreeCountSlow() int {
 func (f *hashMap) addSpan(start common.Pgid, size uint64) {
 	f.backwardMap[start-1+common.Pgid(size)] = size
 	f.forwardMap[start] = size
-	if _, ok := f.freemaps[size]; !ok {
-		f.freemaps[size] = make(map[common.Pgid]struct{})
-	}
-
-	f.freemaps[size][start] = struct{}{}
+	f.spans.insert(start, size)
 	f.freePagesCount += size
 }
 
 func (f *hashMap) delSpan(start common.Pgid, size uint64) {
 	delete(f.forwardMap, start)
 	delete(f.backwardMap, start+common.Pgid(size-1))
-	delete(f.freemaps[size], start)
-	if len(f.freemaps[size]) == 0 {
-		delete(f.freemaps, size)
-	}
+	f.spans.remove(start)
 	f.freePagesCount -= size
 }
 
 func (f *hashMap) mergeSpans(ids common.Pgids) {
 	common.Verify(func() {
-		ids1Freemap := f.idsFromFreemaps()
+		ids1Tree := f.idsFromSpanTree()
 		ids2Forward := f.idsFromForwardMap()
 		ids3Backward := f.idsFromBackwardMap()
 
-		if !reflect.DeepEqual(ids1Freemap, ids2Forward) {
-			panic(fmt.Sprintf("Detected mismatch, f.freemaps: %v, f.forwardMap: %v", f.freemaps, f.forwardMap))
+		if !reflect.DeepEqual(ids1Tree, ids2Forward) {
+			panic(fmt.Sprintf("Detected mismatch, f.spans: %v, f.forwardMap: %v", f.freeSpans(), f.forwardMap))
 		}
-		if !reflect.DeepEqual(ids1Freemap, ids3Backward) {
-			panic(fmt.Sprintf("Detected mismatch, f.freemaps: %v, f.backwardMap: %v", f.freemaps, f.backwardMap))
+		if !reflect.DeepEqual(ids1Tree, ids3Backward) {
+			panic(fmt.Sprintf("Detected mismatch, f.spans: %v, f.backwardMap: %v", f.freeSpans(), f.backwardMap))
 		}
 
 		sort.Sort(ids)
@@ -166,9 +145,9 @@ func (f *hashMap) mergeSpans(ids common.Pgids) {
 			}
 			prev = id
 
-			// The ids shouldn't have any overlap with the existing f.freemaps.
-			if _, ok := ids1Freemap[id]; ok {
-				panic(fmt.Sprintf("detected overlapped free page ID: %d between ids: %v and existing f.freemaps: %v", id, ids, f.freemaps))
+			// The ids shouldn't have any overlap with the existing free spans.
+			if _, ok := ids1Tree[id]; ok {
+				panic(fmt.Sprintf("detected overlapped free page ID: %d between ids: %v and existing f.spans: %v", id, ids, f.freeSpans()))
 			}
 		}
 	})
@@ -206,21 +185,19 @@ func (f *hashMap) mergeWithExistingSpan(pid common.Pgid) {
 	f.addSpan(newStart, newSize)
 }
 
-// idsFromFreemaps get all free page IDs from f.freemaps.
+// idsFromSpanTree gets all free page IDs from f.spans.
 // used by test only.
-func (f *hashMap) idsFromFreemaps() map[common.Pgid]struct{} {
+func (f *hashMap) idsFromSpanTree() map[common.Pgid]struct{} {
 	ids := make(map[common.Pgid]struct{})
-	for size, idSet := range f.freemaps {
-		for start := range idSet {
-			for i := 0; i < int(size); i++ {
-				id := start + common.Pgid(i)
-				if _, ok := ids[id]; ok {
-					panic(fmt.Sprintf("detected duplicated free page ID: %d in f.freemaps: %v", id, f.freemaps))
-				}
-				ids[id] = struct{}{}
+	f.spans.walk(func(start common.Pgid, size uint64) {
+		for i := range common.Pgid(size) {
+			id := start + i
+			if _, ok := ids[id]; ok {
+				panic(fmt.Sprintf("detected duplicated free page ID: %d in f.spans: %v", id, f.freeSpans()))
 			}
+			ids[id] = struct{}{}
 		}
-	}
+	})
 	return ids
 }
 
@@ -259,7 +236,6 @@ func (f *hashMap) idsFromBackwardMap() map[common.Pgid]struct{} {
 func NewHashMapFreelist() Interface {
 	hm := &hashMap{
 		shared:      newShared(),
-		freemaps:    make(map[uint64]pidSet),
 		forwardMap:  make(map[common.Pgid]uint64),
 		backwardMap: make(map[common.Pgid]uint64),
 	}

@@ -35,6 +35,9 @@ type Tx struct {
 	commitHandlers []func()
 	// ordered commits with write ordering instead of a full flush.
 	ordered bool
+	// trimmed is set when the commit lowered the high water mark, so the file
+	// may shrink once the meta page is written.
+	trimmed bool
 	// inodeBuffers owns all pooled mutable page entries until this tx closes.
 	inodeBuffers []*inodeBuffer
 	inodeTail    common.Inodes
@@ -340,6 +343,14 @@ func (tx *Tx) Commit() (err error) {
 		return err
 	}
 	tx.db.lastKnownTxid = uint64(tx.meta.Txid())
+
+	// Return the space past the lowered high water mark to the file system.
+	// Failing to shrink leaves the file larger and does not fail the commit.
+	if tx.trimmed {
+		if err := tx.db.shrink(int(tx.meta.Pgid()+1) * tx.db.pageSize); err != nil {
+			lg.Warningf("shrinking db file failed, pgid: %d, error: %v", tx.meta.Pgid(), err)
+		}
+	}
 	tx.db.unorderedMeta = 0
 	if tx.defersMetaSync() {
 		tx.db.unorderedMeta = tx.meta.Txid()
@@ -364,6 +375,14 @@ func (tx *Tx) Commit() (err error) {
 }
 
 func (tx *Tx) commitFreelist() error {
+	// Drop the free pages at the end of the file from the freelist and lower
+	// the high water mark below them. Allocation prefers low pages, so the end
+	// of the file drains as pages are rewritten.
+	if pgid := tx.db.freelist.TrimTail(tx.meta.Pgid()); pgid != tx.meta.Pgid() {
+		tx.meta.SetPgid(pgid)
+		tx.trimmed = true
+	}
+
 	// Allocate new pages for the new free list. This will overestimate
 	// the size of the freelist but not underestimate the size (which would be bad).
 	p, err := tx.allocate((tx.db.freelist.EstimatedWritePageSize() / tx.db.pageSize) + 1)

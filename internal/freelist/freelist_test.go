@@ -554,6 +554,44 @@ func testFreelistSerDe(t *testing.T, size, stride int) {
 	}
 }
 
+// Ensure that both freelists allocate from the lowest span that fits, so live
+// pages collect at the start of the file.
+func TestFreelist_AllocateLowestFit(t *testing.T) {
+	for name, newFreelist := range map[string]func() Interface{"array": NewArrayFreelist, "hashmap": NewHashMapFreelist} {
+		t.Run(name, func(t *testing.T) {
+			f := newFreelist()
+			f.Init([]common.Pgid{3, 5, 6, 9, 10, 11, 20, 21, 22, 23, 30})
+			require.Equal(t, common.Pgid(5), f.Allocate(1, 2))
+			require.Equal(t, common.Pgid(9), f.Allocate(1, 2))
+			require.Equal(t, common.Pgid(3), f.Allocate(1, 1))
+			require.Equal(t, common.Pgid(11), f.Allocate(1, 1))
+			require.Equal(t, common.Pgid(20), f.Allocate(1, 3))
+			require.Equal(t, common.Pgid(0), f.Allocate(1, 2))
+			require.Equal(t, common.Pgid(23), f.Allocate(1, 1))
+			require.Equal(t, []common.Pgid{30}, []common.Pgid(f.freePageIds()))
+		})
+	}
+}
+
+// Ensure that TrimTail removes exactly the free run ending at the high water
+// mark and leaves pending pages alone.
+func TestFreelist_TrimTail(t *testing.T) {
+	for name, newFreelist := range map[string]func() Interface{"array": NewArrayFreelist, "hashmap": NewHashMapFreelist} {
+		t.Run(name, func(t *testing.T) {
+			f := newFreelist()
+			f.Init([]common.Pgid{3, 4, 8, 9, 10})
+			f.Free(5, common.NewPage(6, 0, 0, 0))
+			require.Equal(t, common.Pgid(12), f.TrimTail(12))
+			require.Equal(t, common.Pgid(8), f.TrimTail(11))
+			require.Equal(t, []common.Pgid{3, 4}, []common.Pgid(f.freePageIds()))
+			require.False(t, f.Freed(9))
+			require.True(t, f.Freed(6))
+			require.Equal(t, common.Pgid(7), f.TrimTail(7))
+			require.Equal(t, 2, f.FreeCount())
+		})
+	}
+}
+
 func requirePages(t *testing.T, f Interface, freePageIds common.Pgids, pendingPageIds common.Pgids) {
 	require.Equal(t, f.FreeCount()+f.PendingCount(), f.Count())
 	require.Equalf(t, freePageIds, f.freePageIds(), "unexpected free pages")

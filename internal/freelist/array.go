@@ -64,6 +64,19 @@ func (f *array) Allocate(txid common.Txid, n int) common.Pgid {
 	return 0
 }
 
+// TrimTail removes the free pages that end at page pgid-1 and returns the
+// first of them, or returns pgid when that page is not free.
+func (f *array) TrimTail(pgid common.Pgid) common.Pgid {
+	n := len(f.ids)
+	for n > 0 && f.ids[n-1] == pgid-1 {
+		n--
+		pgid--
+		delete(f.cache, pgid)
+	}
+	f.ids = f.ids[:n]
+	return pgid
+}
+
 func (f *array) FreeCount() int {
 	return len(f.ids)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"runtime"
 	"sync"
@@ -381,11 +382,22 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 	// Acquire a shared flock on the DB file. Previous versions used an exclusive
 	// lock (LOCK_EX) for write-capable opens, blocking other processes entirely.
 	// Now all opens use a shared lock; cross-process writer exclusion is enforced
-	// via the lock file on a per-transaction basis.
-	if err = flock(db, false, options.Timeout); err != nil {
+	// via the lock file on a per-transaction basis. Exclusive opens still take
+	// LOCK_EX for offline maintenance.
+	if err = flock(db, options.Exclusive, options.Timeout); err != nil {
 		_ = db.close()
 		lg.Errorf("failed to lock db file (%s), error: %v", path, err)
 		return nil, err
+	}
+
+	// Maintenance may have replaced the file by rename while this open waited
+	// for its lock. Open the database now at path instead of the old file.
+	if replaced, err := db.fileReplaced(path); err != nil || replaced {
+		_ = db.close()
+		if err != nil {
+			return nil, err
+		}
+		return Open(path, mode, options)
 	}
 
 	if err := db.load(options); err != nil {
@@ -2039,6 +2051,23 @@ func (db *DB) shrink(sz int) error {
 	return db.storage.Truncate(int64(target))
 }
 
+// fileReplaced reports whether path now names a different file than the open
+// database file. A removed path is not a replacement.
+func (db *DB) fileReplaced(path string) (bool, error) {
+	open, err := db.file.Stat()
+	if err != nil {
+		return false, err
+	}
+	current, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !os.SameFile(open, current), nil
+}
+
 func (db *DB) IsReadOnly() bool {
 	return db.readOnly
 }
@@ -2126,6 +2155,13 @@ type Options struct {
 	// grab a shared lock (UNIX).
 	ReadOnly bool
 
+	// Exclusive takes an exclusive lock on the database file in place of the
+	// shared lock every other open takes, so opens in any process wait for
+	// this handle to close, and this open waits up to Timeout for the open
+	// handles to close. Offline maintenance that rewrites or replaces the file
+	// uses it.
+	Exclusive bool
+
 	// Sets the DB.MmapFlags flag before memory mapping the file.
 	MmapFlags int
 
@@ -2179,8 +2215,8 @@ func (o *Options) String() string {
 		return "{}"
 	}
 
-	return fmt.Sprintf("{Timeout: %s, NoGrowSync: %t, NoFreelistSync: %t, PreLoadFreelist: %t, FreelistType: %s, ReadOnly: %t, MmapFlags: %x, InitialMmapSize: %d, PageSize: %d, MaxSize: %d, NoSync: %t, OpenFile: %p, Mlock: %t, Logger: %p, NoStatistics: %t}",
-		o.Timeout, o.NoGrowSync, o.NoFreelistSync, o.PreLoadFreelist, o.FreelistType, o.ReadOnly, o.MmapFlags, o.InitialMmapSize, o.PageSize, o.MaxSize, o.NoSync, o.OpenFile, o.Mlock, o.Logger, o.NoStatistics)
+	return fmt.Sprintf("{Timeout: %s, NoGrowSync: %t, NoFreelistSync: %t, PreLoadFreelist: %t, FreelistType: %s, ReadOnly: %t, Exclusive: %t, MmapFlags: %x, InitialMmapSize: %d, PageSize: %d, MaxSize: %d, NoSync: %t, OpenFile: %p, Mlock: %t, Logger: %p, NoStatistics: %t}",
+		o.Timeout, o.NoGrowSync, o.NoFreelistSync, o.PreLoadFreelist, o.FreelistType, o.ReadOnly, o.Exclusive, o.MmapFlags, o.InitialMmapSize, o.PageSize, o.MaxSize, o.NoSync, o.OpenFile, o.Mlock, o.Logger, o.NoStatistics)
 
 }
 

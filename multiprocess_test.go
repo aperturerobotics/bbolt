@@ -1868,6 +1868,63 @@ func TestMultiProcessCoordinationLockExcludesOtherProcess(t *testing.T) {
 	}
 }
 
+func TestMultiProcessAcquireCoordinationLockWaitsForHolder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping multi-process test in short mode")
+	}
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	readyPath := filepath.Join(dir, "coord-ready")
+	donePath := filepath.Join(dir, "coord-done")
+
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	holder := spawnChild(t, "hold-coordination-lock", dbPath,
+		"BBOLT_TEST_SIGNAL_PATH="+readyPath,
+		"BBOLT_TEST_PARENT_DONE_PATH="+donePath,
+	)
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForSignal(readyPath, 5*time.Second); err != nil {
+		_ = holder.Process.Kill()
+		_ = holder.Wait()
+		t.Fatal(err)
+	}
+
+	acquired := make(chan error, 1)
+	go func() {
+		acquired <- db.AcquireCoordinationLock()
+	}()
+	select {
+	case err := <-acquired:
+		_ = os.WriteFile(donePath, []byte("done"), 0600)
+		_ = holder.Wait()
+		t.Fatalf("acquired coordination lock while holder was active: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if err := os.WriteFile(donePath, []byte("done"), 0600); err != nil {
+		_ = holder.Process.Kill()
+		_ = holder.Wait()
+		t.Fatal(err)
+	}
+	if err := holder.Wait(); err != nil {
+		t.Fatalf("holder failed: %v", err)
+	}
+	if err := <-acquired; err != nil {
+		t.Fatalf("acquire coordination lock after release: %v", err)
+	}
+	if err := db.ReleaseCoordinationLock(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func childReaderWriterChurnReader(dbPath string) {
 	signalPath := os.Getenv("BBOLT_TEST_SIGNAL_PATH")
 	parentDonePath := os.Getenv("BBOLT_TEST_PARENT_DONE_PATH")

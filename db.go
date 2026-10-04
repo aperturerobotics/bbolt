@@ -1063,6 +1063,21 @@ func (db *DB) validateLockFile() error {
 // from bbolt's per-transaction writer lock and must be released with
 // ReleaseCoordinationLock.
 func (db *DB) TryAcquireCoordinationLock() (bool, error) {
+	return db.acquireCoordinationLock(false)
+}
+
+// AcquireCoordinationLock waits for the lock TryAcquireCoordinationLock
+// attempts. The kernel ends the wait when the holder releases the lock or its
+// process exits; nothing else interrupts it. It must be released with
+// ReleaseCoordinationLock.
+func (db *DB) AcquireCoordinationLock() error {
+	_, err := db.acquireCoordinationLock(true)
+	return err
+}
+
+// acquireCoordinationLock takes the coordination lock, waiting for it when
+// wait is set, and checks that the lock file still names this database.
+func (db *DB) acquireCoordinationLock(wait bool) (bool, error) {
 	if db == nil {
 		return false, berrors.ErrDatabaseNotOpen
 	}
@@ -1082,9 +1097,15 @@ func (db *DB) TryAcquireCoordinationLock() (bool, error) {
 	if err := db.lockFile.ValidatePath(); err != nil {
 		return false, err
 	}
-	acquired, err := db.lockFile.TryAcquireCoordinationLock()
+	acquired := true
+	var err error
+	if wait {
+		err = db.lockFile.AcquireCoordinationLock()
+	} else {
+		acquired, err = db.lockFile.TryAcquireCoordinationLock()
+	}
 	if err != nil || !acquired {
-		return acquired, err
+		return false, err
 	}
 	if err := db.lockFile.ValidatePath(); err != nil {
 		_ = db.lockFile.ReleaseCoordinationLock()
@@ -1093,7 +1114,8 @@ func (db *DB) TryAcquireCoordinationLock() (bool, error) {
 	return true, nil
 }
 
-// ReleaseCoordinationLock releases a lock acquired by TryAcquireCoordinationLock.
+// ReleaseCoordinationLock releases a lock acquired by TryAcquireCoordinationLock
+// or AcquireCoordinationLock.
 func (db *DB) ReleaseCoordinationLock() error {
 	if db == nil {
 		return berrors.ErrDatabaseNotOpen

@@ -1909,6 +1909,13 @@ func TestMultiProcessAcquireCoordinationLockWaitsForHolder(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 
+	// Transactions proceed while the acquire waits.
+	if err := db.View(func(*bolt.Tx) error { return nil }); err != nil {
+		_ = os.WriteFile(donePath, []byte("done"), 0600)
+		_ = holder.Wait()
+		t.Fatalf("read transaction during coordination wait: %v", err)
+	}
+
 	if err := os.WriteFile(donePath, []byte("done"), 0600); err != nil {
 		_ = holder.Process.Kill()
 		_ = holder.Wait()

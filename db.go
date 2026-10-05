@@ -169,10 +169,11 @@ type DB struct {
 	batchMu sync.Mutex
 	batch   *batch
 
-	rwlock   sync.Mutex   // Allows only one writer at a time.
-	metalock sync.Mutex   // Protects meta page access.
-	mmaplock sync.RWMutex // Protects mmap access during remapping.
-	statlock sync.RWMutex // Protects stats access.
+	rwlock    sync.Mutex   // Allows only one writer at a time.
+	metalock  sync.Mutex   // Protects meta page access.
+	coordlock sync.Mutex   // Keeps the lock file open while a coordination lock acquire runs.
+	mmaplock  sync.RWMutex // Protects mmap access during remapping.
+	statlock  sync.RWMutex // Protects stats access.
 
 	ops struct {
 		writeAt           func(b []byte, off int64) (n int, err error)
@@ -938,6 +939,9 @@ func (db *DB) init() error {
 // It will block waiting for any open transactions to finish
 // before closing the database and returning.
 func (db *DB) Close() error {
+	db.coordlock.Lock()
+	defer db.coordlock.Unlock()
+
 	db.rwlock.Lock()
 	defer db.rwlock.Unlock()
 
@@ -1068,7 +1072,8 @@ func (db *DB) TryAcquireCoordinationLock() (bool, error) {
 
 // AcquireCoordinationLock waits for the lock TryAcquireCoordinationLock
 // attempts. The kernel ends the wait when the holder releases the lock or its
-// process exits; nothing else interrupts it. It must be released with
+// process exits; nothing else interrupts it. Transactions proceed during the
+// wait, but Close waits for it to end. It must be released with
 // ReleaseCoordinationLock.
 func (db *DB) AcquireCoordinationLock() error {
 	_, err := db.acquireCoordinationLock(true)
@@ -1077,6 +1082,8 @@ func (db *DB) AcquireCoordinationLock() error {
 
 // acquireCoordinationLock takes the coordination lock, waiting for it when
 // wait is set, and checks that the lock file still names this database.
+// coordlock keeps the lock file open across the attempt without holding
+// metalock, which every transaction takes to begin.
 func (db *DB) acquireCoordinationLock(wait bool) (bool, error) {
 	if db == nil {
 		return false, berrors.ErrDatabaseNotOpen
@@ -1085,33 +1092,46 @@ func (db *DB) acquireCoordinationLock(wait bool) (bool, error) {
 		return false, berrors.ErrDatabaseReadOnly
 	}
 
-	db.metalock.Lock()
-	defer db.metalock.Unlock()
+	db.coordlock.Lock()
+	defer db.coordlock.Unlock()
 
-	if !db.opened {
-		return false, berrors.ErrDatabaseNotOpen
-	}
-	if db.lockFile == nil {
-		return true, nil
-	}
-	if err := db.lockFile.ValidatePath(); err != nil {
-		return false, err
+	lockFile, err := db.coordinationLockFile()
+	if err != nil || lockFile == nil {
+		return err == nil, err
 	}
 	acquired := true
-	var err error
 	if wait {
-		err = db.lockFile.AcquireCoordinationLock()
+		err = lockFile.AcquireCoordinationLock()
 	} else {
-		acquired, err = db.lockFile.TryAcquireCoordinationLock()
+		acquired, err = lockFile.TryAcquireCoordinationLock()
 	}
 	if err != nil || !acquired {
 		return false, err
 	}
-	if err := db.lockFile.ValidatePath(); err != nil {
-		_ = db.lockFile.ReleaseCoordinationLock()
+	if err := lockFile.ValidatePath(); err != nil {
+		_ = lockFile.ReleaseCoordinationLock()
 		return false, err
 	}
 	return true, nil
+}
+
+// coordinationLockFile returns the open lock file after checking that it still
+// names this database. It returns nil without error when the database has no
+// lock file. The caller holds coordlock, so Close cannot release the file.
+func (db *DB) coordinationLockFile() (*LockFile, error) {
+	db.metalock.Lock()
+	defer db.metalock.Unlock()
+
+	if !db.opened {
+		return nil, berrors.ErrDatabaseNotOpen
+	}
+	if db.lockFile == nil {
+		return nil, nil
+	}
+	if err := db.lockFile.ValidatePath(); err != nil {
+		return nil, err
+	}
+	return db.lockFile, nil
 }
 
 // ReleaseCoordinationLock releases a lock acquired by TryAcquireCoordinationLock

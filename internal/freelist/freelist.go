@@ -32,6 +32,14 @@ type Interface interface {
 	// not free.
 	TrimTail(pgid common.Pgid) common.Pgid
 
+	// LastFreed returns the highest free or pending page, or 0 when no page is
+	// free or pending.
+	LastFreed() common.Pgid
+
+	// AllocatesBelow reports whether Allocate would place n contiguous pages
+	// entirely below page pgid.
+	AllocatesBelow(n int, pgid common.Pgid) bool
+
 	// Count returns the number of free and pending pages.
 	Count() int
 
@@ -74,6 +82,9 @@ type Interface interface {
 
 	// NoSyncReload reads the freelist from Pgids and filters out pending items.
 	NoSyncReload(pgIds common.Pgids)
+
+	// lastFree returns the highest free page, or 0 when no page is free.
+	lastFree() common.Pgid
 
 	// freePageIds returns the IDs of all free pages. Returns an empty slice if no free pages are available.
 	freePageIds() common.Pgids

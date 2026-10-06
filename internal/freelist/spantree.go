@@ -73,6 +73,15 @@ func (t *spanTree) lowestFit(size uint64) *spanNode {
 	}
 }
 
+// last returns the span with the highest start, or nil.
+func (t *spanTree) last() *spanNode {
+	n := t.root
+	for n != nil && n.right != nil {
+		n = n.right
+	}
+	return n
+}
+
 // walk calls fn for each span in ascending start order.
 func (t *spanTree) walk(fn func(start common.Pgid, size uint64)) {
 	var visit func(n *spanNode)

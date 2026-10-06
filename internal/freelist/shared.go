@@ -43,6 +43,16 @@ func (t *shared) PendingCount() int {
 	return count
 }
 
+func (t *shared) LastFreed() common.Pgid {
+	last := t.lastFree()
+	for _, txp := range t.pending {
+		for _, id := range txp.ids {
+			last = max(last, id)
+		}
+	}
+	return last
+}
+
 func (t *shared) Count() int {
 	return t.FreeCount() + t.PendingCount()
 }

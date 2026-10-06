@@ -103,6 +103,14 @@ type DB struct {
 	// Do not change concurrently with calls to Batch.
 	MaxBatchDelay time.Duration
 
+	// TailDrainPages is the most live pages at the end of the file that each
+	// commit moves into free space below them, so the end of the file can be
+	// returned to the file system. Default value is copied from
+	// DefaultTailDrainPages in Open.
+	//
+	// If <=0, disables the drain.
+	TailDrainPages int
+
 	// AllocSize is the amount of space allocated when the database
 	// needs to create new pages. This is done to amortize the cost
 	// of truncate() and fsync() when growing the data file.
@@ -451,6 +459,7 @@ func newDB(options *Options) (*DB, *Options) {
 	db.MaxBatchSize = common.DefaultMaxBatchSize
 	db.MaxBatchDelay = common.DefaultMaxBatchDelay
 	db.AllocSize = common.DefaultAllocSize
+	db.TailDrainPages = common.DefaultTailDrainPages
 
 	if !options.NoStatistics {
 		db.stats = new(Stats)

@@ -76,6 +76,19 @@ func (f *hashMap) TrimTail(pgid common.Pgid) common.Pgid {
 	return start
 }
 
+func (f *hashMap) AllocatesBelow(n int, pgid common.Pgid) bool {
+	span := f.spans.lowestFit(uint64(n))
+	return span != nil && span.start+common.Pgid(n) <= pgid
+}
+
+func (f *hashMap) lastFree() common.Pgid {
+	span := f.spans.last()
+	if span == nil {
+		return 0
+	}
+	return span.start + common.Pgid(span.size) - 1
+}
+
 func (f *hashMap) FreeCount() int {
 	common.Verify(func() {
 		expectedFreePageCount := f.hashmapFreeCountSlow()

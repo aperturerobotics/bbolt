@@ -250,6 +250,9 @@ func (tx *Tx) Commit() (err error) {
 	}
 	commitPhase = true
 
+	// Move live pages off the end of the file so a later commit can trim it.
+	tx.drainTail()
+
 	// Rebalance nodes which have had deletions.
 	var startTime = time.Now()
 	tx.root.rebalance()

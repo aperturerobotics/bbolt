@@ -647,11 +647,12 @@ func TestOpen_RecoverFreeList(t *testing.T) {
 
 	// Check free page count is reconstructed when opened with freelist sync.
 	// Syncing the free list on open takes one free page and returns the free
-	// pages at the end of the file to the file system.
+	// pages at the end of the file to the file system. Its tail drain turns
+	// the free pages it moves live pages into pending pages.
 	db.SetOptions(&bolt.Options{})
 	db.MustReopen()
 	freepages -= 1 + before - pages()
-	if fp := db.Stats().FreePageN; fp < freepages {
+	if fp := db.Stats().FreePageN + db.Stats().PendingPageN; fp < freepages {
 		t.Fatalf("closed with %d free pages, opened with %d", freepages, fp)
 	}
 }

@@ -77,6 +77,30 @@ func (f *array) TrimTail(pgid common.Pgid) common.Pgid {
 	return pgid
 }
 
+func (f *array) AllocatesBelow(n int, pgid common.Pgid) bool {
+	// Allocate takes the first run of n contiguous pages.
+	var run int
+	for i, id := range f.ids {
+		if id >= pgid {
+			return false
+		}
+		if i == 0 || id != f.ids[i-1]+1 {
+			run = 0
+		}
+		if run++; run >= n {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *array) lastFree() common.Pgid {
+	if len(f.ids) == 0 {
+		return 0
+	}
+	return f.ids[len(f.ids)-1]
+}
+
 func (f *array) FreeCount() int {
 	return len(f.ids)
 }

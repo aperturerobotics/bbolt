@@ -21,36 +21,36 @@ jobs:
   benchmark:
     runs-on: ${{ fromJson(inputs.runs-on) }}
     steps:
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        fetch-depth: 0
-    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-      with:
-        go-version-file: .go-version
-    - name: Run Benchmarks
-      run: |
-        BENCHSTAT_OUTPUT_FILE=result.txt make test-benchmark-compare REF=${{ inputs.benchGitRef }}
-    - run: |
-        echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
-        cat result.txt >> "$GITHUB_STEP_SUMMARY"
-        echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
-        cat <<EOL >> "$GITHUB_STEP_SUMMARY"
-        <hr />
-        The table shows the median and 90% confidence interval (CI) summaries for each benchmark comparing the HEAD and the BASE, and an A/B comparison under "vs base". The last column shows the statistical p-value with ten runs (n=10).
-        The last row has the Geometric Mean (geomean) for the given rows in the table.
-        Refer to [benchstat's documentation](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat) for more help.
-        EOL
-    - name: Report results over the acceptable limit
-      run: |
-        export MAX_ACCEPTABLE_DIFFERENCE=${{ inputs.maxAcceptableDifferencePercent }}
-        while IFS= read -r line; do
-          # Get fourth value, which is the comparison with the base.
-          value="$(echo "$line" | awk '{print $4}')"
-          if [[ "$value" = +* ]] || [[ "$value" = -* ]]; then
-            if (( $(echo "${value//[^0-9.]/}"'>'"$MAX_ACCEPTABLE_DIFFERENCE" | bc -l) )); then
-              # Shared runners show >10x intra-run throughput variance, so the
-              # comparison is advisory: surface the delta without failing CI.
-              echo "::warning::$value is above the maximum acceptable difference ($MAX_ACCEPTABLE_DIFFERENCE)"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+      - name: Run Benchmarks
+        run: |
+          BENCHSTAT_OUTPUT_FILE=result.txt make test-benchmark-compare REF=${{ inputs.benchGitRef }}
+      - run: |
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          cat result.txt >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          cat <<EOL >> "$GITHUB_STEP_SUMMARY"
+          <hr />
+          The table shows the median and 90% confidence interval (CI) summaries for each benchmark comparing the HEAD and the BASE, and an A/B comparison under "vs base". The last column shows the statistical p-value with ten runs (n=10).
+          The last row has the Geometric Mean (geomean) for the given rows in the table.
+          Refer to [benchstat's documentation](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat) for more help.
+          EOL
+      - name: Report results over the acceptable limit
+        run: |
+          export MAX_ACCEPTABLE_DIFFERENCE=${{ inputs.maxAcceptableDifferencePercent }}
+          while IFS= read -r line; do
+            # Get fourth value, which is the comparison with the base.
+            value="$(echo "$line" | awk '{print $4}')"
+            if [[ "$value" = +* ]] || [[ "$value" = -* ]]; then
+              if (( $(echo "${value//[^0-9.]/}"'>'"$MAX_ACCEPTABLE_DIFFERENCE" | bc -l) )); then
+                # Shared runners show >10x intra-run throughput variance, so the
+                # comparison is advisory: surface the delta without failing CI.
+                echo "::warning::$value is above the maximum acceptable difference ($MAX_ACCEPTABLE_DIFFERENCE)"
+              fi
             fi
-          fi
-        done < <(grep geomean result.txt)
+          done < <(grep geomean result.txt)

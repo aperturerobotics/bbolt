@@ -9,7 +9,7 @@ on:
       testTimeout:
         required: false
         type: string
-        default: '30m'
+        default: "30m"
       runs-on:
         required: false
         type: string
